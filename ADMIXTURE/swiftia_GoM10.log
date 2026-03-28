@@ -1,0 +1,30 @@
+PLINK v1.90b6.21 64-bit (19 Oct 2020)
+Options in effect:
+  --allow-extra-chr
+  --file swiftia_GoM10
+  --make-bed
+  --out swiftia_GoM10
+
+Hostname: system76-pc
+Working directory: /media/popgen/swiftia
+Start time: Sat Mar 28 11:33:20 2026
+
+Random number seed: 1774712000
+1418468 MB RAM detected; reserving 709234 MB for main workspace.
+Scanning .ped file... done.
+Performing single-pass .bed write (16746 variants, 158 people).
+--file: swiftia_GoM10-temporary.bed + swiftia_GoM10-temporary.bim +
+swiftia_GoM10-temporary.fam written.
+16746 variants loaded from .bim file.
+158 people (0 males, 0 females, 158 ambiguous) loaded from .fam.
+Ambiguous sex IDs written to swiftia_GoM10.nosex .
+Using 1 thread (no multithreaded calculations invoked).
+Before main variant filters, 158 founders and 0 nonfounders present.
+Calculating allele frequencies... done.
+Total genotyping rate is 0.951154.
+16746 variants and 158 people pass filters and QC.
+Note: No phenotypes present.
+--make-bed to swiftia_GoM10.bed + swiftia_GoM10.bim + swiftia_GoM10.fam ...
+done.
+
+End time: Sat Mar 28 11:33:20 2026

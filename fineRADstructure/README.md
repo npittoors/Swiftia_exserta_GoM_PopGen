@@ -20,7 +20,7 @@ Two datasets were analysed:
 
 ## Repository File List
 
-### Input files (upload these)
+### Input files
 
 | File | Description |
 |------|-------------|
@@ -29,7 +29,7 @@ Two datasets were analysed:
 | `popmap.txt` | Tab-separated sample-to-population map. Two columns: SAMPLE (sample ID) and POP (population name). No header. 288 rows total (all samples). |
 | `fineRADstructurePlot.R` | Plotting script from fineRADstructure GitHub repo (Malinsky et al. 2018). Must be manually edited before each run to set input file paths — see Usage section below. |
 
-### Output files (upload these)
+### Output files
 
 | File | Description |
 |------|-------------|
@@ -46,7 +46,7 @@ Two datasets were analysed:
 | `swiftia_sub_chunks.mcmcTree.xml` | fineSTRUCTURE population tree, Sub. |
 | `swiftia_sub_pop_coancestry.csv` | Population-averaged co-ancestry matrix, Sub (10×10). |
 
-### Figure files (upload these)
+### Figure files
 
 | File | Description |
 |------|-------------|
@@ -65,7 +65,7 @@ Two datasets were analysed:
 | `figures/coancestry_GoM10_vs_Sub_comparison.pdf` | Side-by-side comparison of GoM10 and Sub population matrices. |
 | `figures/coancestry_GoM10_vs_Sub_comparison.png` | Same as above, PNG format. |
 
-### Scripts (upload these)
+### Scripts
 
 | File | Description |
 |------|-------------|

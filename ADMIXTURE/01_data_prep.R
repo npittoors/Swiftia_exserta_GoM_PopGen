@@ -15,7 +15,7 @@ library(dartR)
 library(adegenet)
 
 # ---- Set working directory --------------------------------------------------
-setwd("/Users/nicolepittoors/Documents/Documents - biscaya/Research/Swiftia_PopGen2/")
+setwd("/set/to/working/directory")
 
 # =============================================================================
 # DATASET 1: Sub (Gulf-Atlantic, 174 ind)

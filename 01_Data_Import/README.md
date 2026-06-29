@@ -127,24 +127,6 @@ Helper function `create_pop_code()` (builds the pop_code objects) is also saved 
 `clone_distances_depth.pdf`, `clone_distances_histo.pdf`,
 `BayeScan_Results_Outliers.pdf`.
 
----
-
-## 7. Suggested repository structure
-
-```
-swiftia_popgen/
-├── README.md                          (this file)
-├── popgen_01_data_import_processed.R
-├── data/
-│   ├── popmap.txt
-│   └── se_metadata.csv                (coordinates per note above)
-├── bayescan/
-│   ├── swiftia_population_assignments_precise.txt
-│   └── swiftia_bayescan_output_fst.txt
-└── output/                            (optional: key .Rdata bundles)
-    ├── neutral_dataset_final.Rdata
-    └── nonclone_subsetted_data.Rdata
-```
 
 **Raw data** link the DOI/accessions here once completed
 

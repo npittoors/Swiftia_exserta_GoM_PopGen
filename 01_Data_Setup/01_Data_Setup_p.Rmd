@@ -5,11 +5,16 @@ date: "2026-08-25"
 output: html_document
 ---
 
-# Set Directories
+# Set directories, load metadata
 ```{r set directories}
 main_dir <- "Your/Working/Directory"
 output_dir <- "Your/Output/Directory"
 setwd(main_dir)
+
+# Load sample metadata (SITE, LAT, LONG, DEPTH per individual; also archived
+# on Figshare as se_metadata_all_snps.csv). row.names = 1 restores sample IDs
+# as rownames, matching how the rest of this script indexes se_metadata.
+se_metadata <- read.csv("se_metadata_all_snps.csv", row.names = 1, stringsAsFactors = FALSE)
 ```
 
 

@@ -74,7 +74,7 @@ output, but the BayeScan run itself happens on a separate server/environment)
 ## Required input files
 
 - `swiftia_snps_90_cov_maf_bi.recode.vcf` — raw, biallelic SNP VCF (also
-  archived on Figshare)
+  archived on Figshare https://doi.org/10.6084/m9.figshare.33292446)
 - `popmap.txt` — tab-delimited sample-to-population map (also archived on
   Figshare)
 - `se_metadata` — ⚠ sample metadata (SITE, LAT, LONG, DEPTH per individual) is

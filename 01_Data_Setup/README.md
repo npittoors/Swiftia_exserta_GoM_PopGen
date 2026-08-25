@@ -77,11 +77,8 @@ output, but the BayeScan run itself happens on a separate server/environment)
   archived on Figshare https://doi.org/10.6084/m9.figshare.33292446)
 - `popmap.txt` — tab-delimited sample-to-population map (also archived on
   Figshare)
-- `se_metadata` — ⚠ sample metadata (SITE, LAT, LONG, DEPTH per individual) is
-  used throughout this script (clone analysis, coordinate correction,
-  diversity table) but is not currently loaded from a file anywhere in the
-  script itself. Confirm the source filename/object before this is run
-  standalone by someone without it already in their environment.
+- se_metadata_all_snps.csv — sample metadata (SITE, LAT, LONG, DEPTH per individual),
+  loaded as se_metadata near the top of the script (also archived on Figshare)
 
 ## Outputs
 

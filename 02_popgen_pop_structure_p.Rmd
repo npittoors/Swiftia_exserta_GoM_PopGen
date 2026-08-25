@@ -1,0 +1,2537 @@
+---
+title: "02_popgen_pop_structure"
+author: "Nicole Pittoors"
+date: "2026-03-30"
+output: html_document
+---
+# Load required packages
+```{r}
+library(adegenet)
+library(poppr)
+library(ade4)
+library(umap)
+library(ggplot2)
+library(gridExtra)
+library(tidyverse)
+library(viridis)
+library(reshape2)
+library(ggdendro)
+library(SNPRelate)
+library(gdsfmt)
+library(geosphere)
+library(hierfstat)
+```
+
+# Load data from 01_popgen_data_import
+```{r Load data}
+# Core filtered datasets
+load('snps.Rdata')           # filtered genind object (288 individuals, 23869 loci)
+load('pc.Rdata')             # genclone object with MLG filtering
+load('snps_mlg.Rdata')       # clone-corrected genind
+
+# Post-HWE/Het filtered neutral datasets
+load('snps_mlg_he.Rdata')         # Ho-filtered
+load('snps_mlg_he.hw.Rdata')      # HWE test results
+load('nonclone_subsetted_data.Rdata')  # all subsets: neutral_dataset_final, 
+                                        # snps_mlg_sub_n, snps_mlg_gom_all_n, 
+                                        # snps_mlg_GoM10_n, pop codes, metadata
+
+# Clone analysis results
+load('clean_clone_analysis_final.RData')
+load('initial_clone_analysis_results.Rdata')
+
+# Distance matrices (only load what you need)
+load('distgenEUCL_se.Rdata')
+load('distgenDISS_se.Rdata')
+
+# BayeScan results (if continuing that section)
+load('basicstat_all.Rdata')
+
+# Core filtered datasets
+load('nonclone_subsetted_data.Rdata')  
+# loads: neutral_dataset_final, snps_mlg_sub_n, snps_mlg_gom_all_n, snps_mlg_GoM10_n
+# pop_code_all, pop_code_sub, pop_code_GoMa, pop_code_GoM10
+# se_metadata_neutral_all, se_metadata_neutral_sub, 
+# se_metadata_neutral_GoMa, se_metadata_neutral_GoM10
+# all pop_order and WE_order vectors
+
+# LD and PCA results (if continuing mid-analysis)
+load('swiftia_LD_PCA_results.Rdata')
+
+# FST matrices (if already computed)
+# fst_matrix_all, fst_matrix_sub, fst_matrix_GoM10 - these are computed in-script
+
+# IBD results (if already computed)
+# Loaded via readRDS() calls within chunks
+
+# VCF (needed for LD/GDS creation sections)
+vcf.fn_full <- "./swiftia_snps_90_cov_maf_bi.recode.vcf"
+load('vcf_full.Rdata')  # or re-read with read.vcfR()
+
+# Neutral metadata
+read.csv(se_metadata_neutral_all.csv)
+```
+
+# Define colors and sites
+```{r Define colors and sites}
+
+# Matches site for ARMS paper as best as possible
+c13_sites <- c("Alderdice" = "#60714E",      
+               "Geyer" = "#015951",
+               "Elvers" = "#3B8C6E",
+               "Bright" = "#B0DBBB",
+               "Bouma" = "#5BBFB0",
+               "Diaphus" = "#9DC9D3",
+               "FTR" = "#408BA8",
+               "WFGB" = "#0D3D59",
+               "EFGB" = "#A8B1D6",
+               "AAR" = "#FEBC2C",
+               "McGrail" = "#FC8D2B",
+               "RTR" = "#F1531B",
+               "Edisto"= "#802A5A")
+
+c_13sites_WE <- c("WFGB" = "#F1531B",  
+  "EFGB" = "#FC8D2B",  
+  "Bright" = "#FEBC2C",  
+  "Geyer" = "#802A5A",  
+  "McGrail" = "#A8B1D6",  
+  "Elvers" = "#9DC9D3",  
+  "Bouma" = "#408BA8",  
+  "Alderdice" = "#0D3D59",  
+  "Diaphus" = "#5BBFB0",  
+  "FTR" = "#B0DBBB",  
+  "AAR" = "#3B8C6E",  
+  "RTR" = "#015951",  
+  "Edisto" = "#60714E")
+
+GoM10_WE_colors <- c(  
+  "EFGB" = "#FC8D2B",  
+  "Bright" = "#FEBC2C", 
+  "McGrail" = "#A8B1D6",  
+  "Elvers" = "#9DC9D3",  
+  "Bouma" = "#408BA8",  
+  "Alderdice" = "#0D3D59",  
+  "Diaphus" = "#5BBFB0",  
+  "FTR" = "#B0DBBB",  
+  "AAR" = "#3B8C6E",  
+  "RTR" = "#015951")
+
+site_colors <- c(
+  "WFGB" = "#700500",
+  "EFGB" = "#FF2EBF",
+  "Bright" = "#FF2E00",
+  "Geyer" = "#FF7514",
+  "McGrail" = "#F78C61",
+  "Elvers" = "#FFB812",
+  "Bouma" = "#6F8E00",
+  "Alderdice" = "#1B6758",
+  "Diaphus" = "#B0FFAD",
+  "FTR" = "#45C2E3",
+  "AAR" = "#000872",
+  "RTR" = "#F5C7FF",
+  "Edisto" = "#6E0A7C"
+)
+
+# Create a vector of site names in west-to-east order
+W2E <- c('WFGB','EFGB','Bright','Geyer','McGrail','Elvers','Bouma','Alderdice','Diaphus','FTR','AAR','RTR','Edisto')
+
+# Create color mapping for sites
+sitecol <- data.frame(
+  W2E = names(c13_sites),
+  mypal = unname(c13_sites),
+  stringsAsFactors = FALSE
+)
+
+# Arrange colors in west-to-east order
+myCol.df <- sitecol[match(W2E, sitecol$W2E), ]
+myCol <- myCol.df$mypal
+
+# Plot correlation helper function
+plot_correlation <- function(data, var, df, colors = c13_sites) {
+  ggplot(data, aes(x = .data[[var]], y = data[, df])) +
+    geom_point(aes(color = SITE), size = 2) +
+    scale_color_manual(values = colors) +
+    geom_smooth(method = "lm", color = "black") +
+    labs(x = var,
+         y = paste0("Discriminant Function ", df),
+         title = paste0("DF", df, " vs. ", var)) +
+    theme_minimal() +
+    theme(legend.position = "none")
+}
+```
+
+Load Part 01 metadata fresh from CSV rather than depending on Part 1's
+live session state. Explicitly reorders each table to match its genind object's individual order and hard-stops on any mismatch --
+analyze_geographic_correlations() assigns metadata columns positionally,so silent misalignment here would mispair individuals with the wrong site/coordinates with no error.
+```{r load metadata objects}
+load_metadata <- function(csv_path, genind_obj) {
+  meta <- read.csv(csv_path, row.names = 1, check.names = FALSE)
+  ids <- indNames(genind_obj)
+
+  missing_ids <- setdiff(ids, rownames(meta))
+  if (length(missing_ids) > 0) {
+    stop(csv_path, ": ", length(missing_ids), " individuals in the genind object ",
+         "are missing from this metadata file, e.g. ", paste(head(missing_ids), collapse=", "))
+  }
+
+  meta <- meta[ids, , drop = FALSE]  # reorder to match genind, not CSV row order
+  stopifnot(nrow(meta) == nInd(genind_obj))
+  stopifnot(identical(rownames(meta), ids))
+  meta
+}
+
+se_metadata_neutral_all   <- load_metadata("./se_metadata_neutral_all.csv",   neutral_dataset_final)
+se_metadata_neutral_GoMa  <- load_metadata("./se_metadata_neutral_GoMa.csv",  snps_mlg_gom_all_n)
+se_metadata_neutral_GoM10 <- load_metadata("./se_metadata_neutral_GoM10.csv", snps_mlg_GoM10_n)
+se_metadata_neutral_sub   <- load_metadata("./se_metadata_neutral_sub.csv",   snps_mlg_sub_n)
+```
+
+==============================================================
+----------------------Population Structure-------------------
+==============================================================
+Four parallel analyses on nested sample groupings -- All (192 ind, 13 sites)
+-> GoMa (176 ind, 12 sites, no Edisto) -> GoM10 (158 ind, 9 sites, >10 ind each) -> Sub (174 ind, 10 sites = GoM10 + Edisto). Each section follows the same pattern: PCA/PCO/UMAP, DAPC without a site prior (data-driven K), DAPC with a site prior (used for all figures/interpretation), then Spearman correlations of the retained discriminant functions against longitude/latitude/depth via analyze_geographic_correlations().
+
+# Load helper functions for population structure analyses for all 4 datasets
+```{r helper functions for pop struc.}
+# Scatter of one DF against one geographic variable, colored by site
+plot_correlation <- function(data, var, df, colors = c13_sites) {
+  ggplot(data, aes(x = .data[[var]], y = data[, df])) +
+    geom_point(aes(color = SITE), size = 2) +
+    scale_color_manual(values = colors) +
+    geom_smooth(method = "lm", color = "black") +
+    labs(x = var, y = paste0("Discriminant Function ", df),
+         title = paste0("DF", df, " vs. ", var)) +
+    theme_minimal() +
+    theme(legend.position = "none")
+}
+
+# Spearman-correlates every DF against LONG/LAT/DEPTH, writes a CSV, and builds
+# a grouped multi-panel figure for every DF with >=1 significant relationship.
+# Derives significant pairs from the data itself
+analyze_geographic_correlations <- function(dapc_obj, metadata, eigenvalues,
+                                             site_colors, dataset_label,
+                                             csv_out, pdf_out) {
+  ind_coords <- as.data.frame(dapc_obj$ind.coord)
+  ind_coords$SITE  <- metadata$SITE
+  ind_coords$LONG  <- metadata$LONG
+  ind_coords$LAT   <- metadata$LAT
+  ind_coords$DEPTH <- metadata$DEPTH
+
+  geographic_vars <- c("LONG", "LAT", "DEPTH")
+  n_da <- ncol(dapc_obj$ind.coord)
+  correlations <- list(); p_values <- list()
+  for (var in geographic_vars) {
+    correlations[[var]] <- list(); p_values[[var]] <- list()
+    for (i in 1:n_da) {
+      test <- cor.test(ind_coords[, i], ind_coords[[var]], method = "spearman")
+      correlations[[var]][[i]] <- test$estimate
+      p_values[[var]][[i]] <- test$p.value
+    }
+  }
+
+  results_all <- data.frame(
+    DiscriminantFunction = rep(1:n_da, 3),
+    Geographic_Variable = rep(geographic_vars, each = n_da),
+    Eigenvalue_Proportion = rep(eigenvalues[1:n_da], 3),
+    Correlation = c(unlist(correlations[["LONG"]]), unlist(correlations[["LAT"]]), unlist(correlations[["DEPTH"]])),
+    P_value = c(unlist(p_values[["LONG"]]), unlist(p_values[["LAT"]]), unlist(p_values[["DEPTH"]]))
+  )
+  results_all$Significance <- ifelse(results_all$P_value < 0.001, "***",
+                               ifelse(results_all$P_value < 0.01, "**",
+                               ifelse(results_all$P_value < 0.05, "*", "")))
+
+  for (var in geographic_vars) {
+    cat("\n", dataset_label, "- Correlations with", var, ":\n")
+    print(results_all[results_all$Geographic_Variable == var, ])
+  }
+  write.csv(results_all, csv_out, row.names = FALSE)
+
+  sig_rows <- results_all[results_all$Significance != "", ]
+  if (nrow(sig_rows) == 0) {
+    message("No significant DF-geography relationships for ", dataset_label, " -- skipping figure.")
+    return(invisible(list(results = results_all, ind_coords = ind_coords)))
+  }
+
+  sig_relationships <- split(sig_rows[, c("Geographic_Variable","DiscriminantFunction")], seq_len(nrow(sig_rows)))
+  sig_relationships <- lapply(sig_relationships, function(r) c(as.character(r$Geographic_Variable), as.character(r$DiscriminantFunction)))
+
+  sig_plots <- list()
+  for (rel in sig_relationships) {
+    var <- rel[1]; df <- as.numeric(rel[2])
+    sig_plots[[paste(var, df)]] <- plot_correlation(ind_coords, var, df, colors = site_colors)
+  }
+
+  dfs_present <- sort(unique(as.numeric(sapply(strsplit(names(sig_plots), " "), `[`, 2))))
+  grouped_plots <- list()
+  for (df in dfs_present) {
+    keys <- names(sig_plots)[as.numeric(sapply(strsplit(names(sig_plots), " "), `[`, 2)) == df]
+    pct <- signif(eigenvalues[df] * 100, 3)
+    grouped_plots[[as.character(df)]] <- grid.arrange(
+      grobs = sig_plots[keys], ncol = min(3, length(keys)),
+      top = paste0("DF", df, " Relationships (", pct, "% of variance)")
+    )
+  }
+  combined_plot <- grid.arrange(grobs = grouped_plots, ncol = 1)
+  ggsave(pdf_out, combined_plot, width = 15, height = 5 * length(grouped_plots))
+
+  invisible(list(results = results_all, ind_coords = ind_coords))
+}
+```
+
+# ------ Pop Struc. ALL POPULATIONS (192 ind, 13 sites, incl. Edisto) ------ 
+ALL populations: PCA, DAPC, and geographic-prior DAPC (192 ind, 13 sites incl. Edisto)
+PCA/PCO/UMAP explore structure with no assumptions about grouping.
+DAPC without prior uses find.clusters() (k-means on PCs) to discover Kgenetic clusters blind to sampling site. 
+DAPC with prior then re-runs DAPC using known site membership as the grouping, which is the version used for all downstream interpretation and figures.
+
+```{r}
+x.se_all <- tab(neutral_dataset_final, freq=TRUE, NA.method="mean")
+pca.se_all <- dudi.pca(df = x.se_all, center = TRUE, scale = FALSE, scannf = FALSE, nf = 15)
+pco.se_all <- dudi.pco(dist(x.se_all), scannf=FALSE, nf=3)
+
+pdf('./PCA_PCO_all.pdf', width = 15, height = 15)
+s.class(pca.se_all$li, fac=pop(neutral_dataset_final), col=funky(15))
+s.class(pco.se_all$li, fac=pop(neutral_dataset_final), col=funky(15))
+pca.umap_all <- umap(pca.se_all$li)
+s.class(pca.umap_all$layout, fac=pop(neutral_dataset_final), col=funky(15))
+plot(pca.umap_all$layout[,1], pca.umap_all$layout[,2],
+     col=neutral_dataset_final$pop, pch=20, cex=2, main='PCA-UMAP')
+dev.off()
+
+# a-score exploration kept for reference/documentation only -- NOT used to set
+# the final n.pca below. That interactive process isn't reproducible (its
+# result depends on the PC ceiling chosen in the first prompt, which was never
+# recorded), so the confirmed value is hardcoded instead.
+# dapc_a_score_all <- dapc(neutral_dataset_final)
+# pdf('./DAPC_denovo_a-optimization_all.pdf', width = 15, height = 15)
+# temp_score_all <- optim.a.score(dapc_a_score_all)
+# dev.off()
+dapc_prior_all <- dapc(neutral_dataset_final, n.pca = 19, n.da = 6)
+save(dapc_prior_all, file='./dapc_prior_all.Rdata')
+eigenvalues_all <- dapc_prior_all$eig / sum(dapc_prior_all$eig)
+print(round(eigenvalues_all, 4))
+
+# Find clusters (K=3, per ADMIXTURE) -- pick K interactively from the BIC plot
+pdf('./DAPC_BIC_Kclusters_all.pdf', width = 15, height = 15)
+grp_all <- find.clusters(neutral_dataset_final, n.pca=nInd(neutral_dataset_final), max.n.clust=20)
+dev.off()
+
+dapc_noprior_all <- dapc(neutral_dataset_final, grp_all$grp, n.pca=temp_score_all$best, n.da=6)
+save(dapc_noprior_all, file='./dapc_noprior_all.Rdata')
+
+col3 <- c("#88CCEE", "#CC6677", "#7AD151FF")
+pdf('./DAPC_noprior_all.pdf', width = 9, height = 9)
+scatter(dapc_noprior_all, col=col3)
+dev.off()
+
+dapc_noprior_all$IND <- row.names(dapc_noprior_all$ind.coord)
+dapc_info_all <- as.data.frame(cbind(dapc_noprior_all$IND, grp_all$grp, dapc_noprior_all$ind.coord))
+colnames(dapc_info_all) <- c("IND", "K", paste0("DPC", 1:ncol(dapc_noprior_all$ind.coord)))
+save(dapc_info_all, file='./dapc_info_all.Rdata')
+
+# DAPC with geographic prior
+dapc_prior_all <- dapc(neutral_dataset_final, n.pca=temp_score_all$best, n.da=6)
+save(dapc_prior_all, file='./dapc_prior_all.Rdata')
+eigenvalues_all <- dapc_prior_all$eig / sum(dapc_prior_all$eig)
+
+k_colors <- c("#88CCEE", "#CC6677", "#7AD151FF")
+group_colors_all <- c13_sites[as.character(pop(neutral_dataset_final))]
+
+pdf('./dapc_prior_all_plots.pdf', width = 9, height = 9)
+scatter(dapc_prior_all, pch=20, cell=1, solid=.7, cex=2, leg=TRUE, clab=0, cstar=1,
+        col=c13_sites[levels(pop(neutral_dataset_final))])
+plot(dapc_prior_all$ind.coord[,1], dapc_prior_all$ind.coord[,2],
+     col=group_colors_all, pch=20, cex=2,
+     xlab=paste('DA1 (', signif(eigenvalues_all[1]*100,3), '%)'),
+     ylab=paste('DA2 (', signif(eigenvalues_all[2]*100,3), '%)'), main='DAPC with priors')
+plot(dapc_prior_all$ind.coord[,1], dapc_prior_all$ind.coord[,2],
+     col=k_colors[dapc_noprior_all$grp], pch=20, cex=2,
+     xlab=paste('DA1 (', signif(eigenvalues_all[1]*100,3), '%)'),
+     ylab=paste('DA2 (', signif(eigenvalues_all[2]*100,3), '%)'), main='DAPC colored by K')
+dapc_prior_all.umap <- umap(dapc_prior_all$ind.coord)
+s.class(dapc_prior_all.umap$layout, fac=pop(neutral_dataset_final),
+        col=c13_sites[levels(pop(neutral_dataset_final))])
+plot(dapc_prior_all.umap$layout[,1], dapc_prior_all.umap$layout[,2],
+     col=group_colors_all, pch=20, cex=2, main='PCA-UMAP')
+dev.off()
+```
+
+# Geographic correlations ALL POPS
+Test whether ALL's discriminant functions track longitude, latitude, or depth Spearman-correlates every retained DF against the three geographic variables, writes the results table, and plots every DF with a significant relationship.
+
+```{r Geographic correlations ALL Pops}
+corr_all <- analyze_geographic_correlations(
+  dapc_obj = dapc_prior_all, metadata = se_metadata_neutral_all, eigenvalues = eigenvalues_all,
+  site_colors = c13_sites, dataset_label = "ALL",
+  csv_out = "./spatial_correlation_results_all.csv", pdf_out = "./significant_spatial_relationships_all.pdf"
+)
+```
+
+# ----- Pop Struc. GoMa -------
+GoMa: all Gulf populations regardless of size, no Edisto (176 ind, 12 sites)
+
+Same PCA -> DAPC (no prior) -> DAPC (geographic prior) workflow as ALL,
+run on the Gulf-only subset so Atlantic (Edisto) structure can't dominate the signal.
+```{r r Population Structure GoMa}
+x.se_GoMa <- tab(snps_mlg_gom_all_n, freq=TRUE, NA.method="mean")
+pca.se_GoMa <- dudi.pca(df = x.se_GoMa, center = TRUE, scale = FALSE, scannf = FALSE, nf = 15)
+pco.se_GoMa <- dudi.pco(dist(x.se_GoMa), scannf=FALSE, nf=3)
+
+pdf('./PCA_PCO_GoMa.pdf', width = 15, height = 15)
+s.class(pca.se_GoMa$li, fac=pop(snps_mlg_gom_all_n), col=funky(15))
+s.class(pco.se_GoMa$li, fac=pop(snps_mlg_gom_all_n), col=funky(15))
+pca.umap_GoMa <- umap(pca.se_GoMa$li)
+s.class(pca.umap_GoMa$layout, fac=pop(snps_mlg_gom_all_n), col=funky(15))
+plot(pca.umap_GoMa$layout[,1], pca.umap_GoMa$layout[,2],
+     col=snps_mlg_gom_all_n$pop, pch=20, cex=2, main='PCA-UMAP')
+dev.off()
+
+# PROMPT "Choose the number PCs to retain (>=1):" -> enter a large ceiling, e.g. 60
+# PROMPT "Choose the number discriminant functions..." -> doesn't matter, e.g. 6
+dapc_a_score_GoMa <- dapc(snps_mlg_gom_all_n)
+pdf('./DAPC_denovo_a-optimization_GoMa.pdf', width = 15, height = 15)
+temp_score_GoMa <- optim.a.score(dapc_a_score_GoMa)
+temp_score_GoMa$best #26
+dev.off()
+
+pdf('./DAPC_BIC_Kclusters_GoMa.pdf', width = 15, height = 15)
+grp_GoMa <- find.clusters(snps_mlg_gom_all_n, n.pca=nInd(snps_mlg_gom_all_n), max.n.clust=20)
+#   PROMPT "Choose the number PCs to retain (>=1):"     -> enter nInd(snps_mlg_gom_all_n),
+#                                                           i.e. 176 (retains max PCs, matches
+#                                                           the n.pca=nInd(...) argument above)
+#   PROMPT "Choose the number of clusters (>=2):"       -> inspect the BIC plot this opens;
+#                                                           choose the K where BIC elbows/
+#                                                           levels off (matches GoM10/All's
+#                                                           convention of reading the BIC curve,
+#                                                           not a fixed number -- no established
+#                                                           value recorded for GoMa's K yet)
+dev.off()
+
+# dapc_a_score_GoMa <- dapc(snps_mlg_gom_all_n)
+# pdf('./DAPC_denovo_a-optimization_GoMa.pdf', width = 15, height = 15)
+# temp_score_GoMa <- optim.a.score(dapc_a_score_GoMa)
+# dev.off()
+dapc_noprior_GoMa <- dapc(snps_mlg_gom_all_n, grp_GoMa$grp, n.pca = 26, n.da = 6)
+save(dapc_noprior_GoMa, file='./dapc_noprior_GoMa.Rdata')
+
+pdf('./DAPC_noprior_GoMa.pdf', width = 9, height = 9)
+scatter(dapc_noprior_GoMa, col=col3)
+dev.off()
+
+dapc_noprior_GoMa$IND <- row.names(dapc_noprior_GoMa$ind.coord)
+dapc_info_GoMa <- as.data.frame(cbind(dapc_noprior_GoMa$IND, grp_GoMa$grp, dapc_noprior_GoMa$ind.coord))
+colnames(dapc_info_GoMa) <- c("IND", "K", paste0("DPC", 1:ncol(dapc_noprior_GoMa$ind.coord)))
+save(dapc_info_GoMa, file='./dapc_info_GoMa.Rdata')
+
+dapc_prior_GoMa <- dapc(snps_mlg_gom_all_n, n.pca = 26, n.da = 6)
+save(dapc_prior_GoMa, file='./dapc_prior_GoMa.Rdata')
+eigenvalues_GoMa <- dapc_prior_GoMa$eig / sum(dapc_prior_GoMa$eig)
+
+group_colors_GoMa <- GoMa_WE_colors[as.character(pop(snps_mlg_gom_all_n))]
+
+pdf('./dapc_prior_GoMa_plots.pdf', width = 9, height = 9)
+scatter(dapc_prior_GoMa, pch=20, cell=1, solid=.7, cex=2, leg=TRUE, clab=0, cstar=1,
+        col=GoMa_WE_colors[levels(pop(snps_mlg_gom_all_n))])
+plot(dapc_prior_GoMa$ind.coord[,1], dapc_prior_GoMa$ind.coord[,2],
+     col=group_colors_GoMa, pch=20, cex=2,
+     xlab=paste('DA1 (', signif(eigenvalues_GoMa[1]*100,3), '%)'),
+     ylab=paste('DA2 (', signif(eigenvalues_GoMa[2]*100,3), '%)'), main='DAPC with priors')
+plot(dapc_prior_GoMa$ind.coord[,1], dapc_prior_GoMa$ind.coord[,2],
+     col=k_colors[dapc_noprior_GoMa$grp], pch=20, cex=2,
+     xlab=paste('DA1 (', signif(eigenvalues_GoMa[1]*100,3), '%)'),
+     ylab=paste('DA2 (', signif(eigenvalues_GoMa[2]*100,3), '%)'), main='DAPC colored by K')
+dapc_prior_GoMa.umap <- umap(dapc_prior_GoMa$ind.coord)
+s.class(dapc_prior_GoMa.umap$layout, fac=pop(snps_mlg_gom_all_n),
+        col=GoMa_WE_colors[levels(pop(snps_mlg_gom_all_n))])
+plot(dapc_prior_GoMa.umap$layout[,1], dapc_prior_GoMa.umap$layout[,2],
+     col=group_colors_GoMa, pch=20, cex=2, main='PCA-UMAP')
+dev.off()
+```
+
+# Test whether GoMa's discriminant functions track longitude, latitude, or depth
+```{r Geographic correlations GoMa}
+GoMa_WE_colors <- c("WFGB" = "#F1531B", "EFGB" = "#FC8D2B", "Bright" = "#FEBC2C",
+  "Geyer" = "#802A5A", "McGrail" = "#A8B1D6", "Elvers" = "#9DC9D3",
+  "Bouma" = "#408BA8", "Alderdice" = "#0D3D59", "Diaphus" = "#5BBFB0",
+  "FTR" = "#B0DBBB", "AAR" = "#3B8C6E", "RTR" = "#015951")
+corr_GoMa <- analyze_geographic_correlations(
+  dapc_obj = dapc_prior_GoMa, metadata = se_metadata_neutral_GoMa, eigenvalues = eigenvalues_GoMa,
+  site_colors = GoMa_WE_colors, dataset_label = "GoMa",
+  csv_out = "./spatial_correlation_results_GoMa.csv", pdf_out = "./significant_spatial_relationships_GoMa.pdf"
+)
+```
+
+
+# ----- Pop Struc. GoM10 -------
+GoM10: Gulf populations >10 individuals, no Edisto (158 ind, 9 sites)
+
+Test whether GoMa's discriminant functions track longitude, latitude, or depth.
+Same workflow as GoMa, restricted further to populations with enough individuals for reliable within-site estimates. DAPC prior is fixed at n.pca=19, n.da=9 (not the a-score-optimized value) to match Sub's
+```{r Population Structure GoM10}
+x.se_GoM10 <- tab(snps_mlg_GoM10_n, freq=TRUE, NA.method="mean")
+pca.se_GoM10 <- dudi.pca(df = x.se_GoM10, center = TRUE, scale = FALSE, scannf = FALSE, nf = 15)
+pco.se_GoM10 <- dudi.pco(dist(x.se_GoM10), scannf=FALSE, nf=3)
+
+pdf('./PCA_PCO_GoM10.pdf', width = 15, height = 15)
+s.class(pca.se_GoM10$li, fac=pop(snps_mlg_GoM10_n), col=funky(15))
+s.class(pco.se_GoM10$li, fac=pop(snps_mlg_GoM10_n), col=funky(15))
+pca.umap_GoM10 <- umap(pca.se_GoM10$li)
+s.class(pca.umap_GoM10$layout, fac=pop(snps_mlg_GoM10_n), col=funky(15))
+plot(pca.umap_GoM10$layout[,1], pca.umap_GoM10$layout[,2],
+     col=snps_mlg_GoM10_n$pop, pch=20, cex=2, main='PCA-UMAP')
+dev.off()
+
+dapc_a_score_GoM10 <- dapc(snps_mlg_GoM10_n)
+pdf('./DAPC_denovo_a-optimization_GoM10.pdf', width = 15, height = 15)
+temp_score_GoM10 <- optim.a.score(dapc_a_score_GoM10)
+temp_score_GoM10$best
+dev.off()
+
+pdf('./DAPC_BIC_Kclusters_GoM10.pdf', width = 15, height = 15)
+grp_GoM10 <- find.clusters(snps_mlg_GoM10_n, n.pca=nInd(snps_mlg_GoM10_n), max.n.clust=20)
+dev.off()
+# K=2 -> EFGB vs. Remaining GoM
+table(grp_GoM10$grp, pop(snps_mlg_GoM10_n))
+levels(grp_GoM10$grp) <- c("Remaining GoM", "EFGB")
+k_colors_GoM10 <- c("Remaining GoM" = "#CC6677", "EFGB" = "#88CCEE")
+
+dapc_noprior_GoM10 <- dapc(snps_mlg_GoM10_n, grp_GoM10$grp, n.pca=temp_score_GoM10$best, n.da=6)
+save(dapc_noprior_GoM10, file='./dapc_noprior_GoM10.Rdata')
+
+pdf('./DAPC_noprior_GoM10.pdf', width = 9, height = 9)
+scatter(dapc_noprior_GoM10, col=col3)
+dev.off()
+
+# CONFIRMED final DAPC: n.pca=19, n.da=9
+dapc_prior_GoM10 <- dapc(snps_mlg_GoM10_n, n.pca = 19, n.da = 9)
+save(dapc_prior_GoM10, file = './dapc_prior_GoM10.Rdata')
+eigenvalues_GoM10 <- dapc_prior_GoM10$eig / sum(dapc_prior_GoM10$eig)
+print(round(eigenvalues_GoM10, 4))  # DA1/DA2 = 59.1%/19.7%
+
+group_colors_GoM10 <- GoM10_WE_colors[as.character(pop(snps_mlg_GoM10_n))]
+xlim_GoM10 <- range(dapc_prior_GoM10$ind.coord[,1])
+ylim_GoM10 <- range(dapc_prior_GoM10$ind.coord[,2])
+
+pdf('./dapc_prior_GoM10_plots_FINAL.pdf', width = 18, height = 9)
+par(mfrow=c(1,2))
+
+plot(dapc_prior_GoM10$ind.coord[,1], dapc_prior_GoM10$ind.coord[,2],
+     col=group_colors_GoM10, pch=20, cex=3, xlim=xlim_GoM10, ylim=ylim_GoM10,
+     xlab=paste('DA1 (', signif(eigenvalues_GoM10[1]*100, 3), '%)'),
+     ylab=paste('DA2 (', signif(eigenvalues_GoM10[2]*100, 3), '%)'), main='DAPC with priors - GoM10')
+pops_GoM10 <- as.character(pop(snps_mlg_GoM10_n))
+for(site in unique(pops_GoM10)) {
+  idx <- which(pops_GoM10 == site)
+  coords <- dapc_prior_GoM10$ind.coord[idx, 1:2, drop=FALSE]
+  centroid <- colMeans(coords)
+  segments(x0=centroid[1], y0=centroid[2], x1=coords[,1], y1=coords[,2],
+           col=GoM10_WE_colors[site], lwd=0.8)
+}
+points(dapc_prior_GoM10$ind.coord[,1], dapc_prior_GoM10$ind.coord[,2],
+       col=group_colors_GoM10, pch=20, cex=3)
+legend("topleft", legend=names(GoM10_WE_colors), col=GoM10_WE_colors, pch=20, cex=0.8)
+
+plot(dapc_prior_GoM10$ind.coord[,1], dapc_prior_GoM10$ind.coord[,2],
+     col=k_colors_GoM10[as.character(grp_GoM10$grp)], pch=20, cex=3, xlim=xlim_GoM10, ylim=ylim_GoM10,
+     xlab=paste('DA1 (', signif(eigenvalues_GoM10[1]*100, 3), '%)'),
+     ylab=paste('DA2 (', signif(eigenvalues_GoM10[2]*100, 3), '%)'), main='DAPC colored by cluster - GoM10')
+legend("topleft", legend=names(k_colors_GoM10), col=k_colors_GoM10, pch=20, cex=0.8)
+dev.off()
+
+# UMAP -- regenerated against the confirmed n.pca=19 object
+dapc_prior_GoM10.umap <- umap(dapc_prior_GoM10$ind.coord)
+pdf('./UMAP_dapc_prior_GoM10_sclass.pdf', width = 9, height = 9)
+s.class(dapc_prior_GoM10.umap$layout, fac=pop(snps_mlg_GoM10_n),
+        col=GoM10_WE_colors[levels(pop(snps_mlg_GoM10_n))])
+dev.off()
+pdf('./UMAP_dapc_prior_GoM10_points.pdf', width = 9, height = 9)
+plot(dapc_prior_GoM10.umap$layout[,1], dapc_prior_GoM10.umap$layout[,2],
+     col=group_colors_GoM10, pch=20, cex=2, main='DAPC-UMAP GoM10', xlab='UMAP 1', ylab='UMAP 2')
+legend('topright', legend=levels(pop(snps_mlg_GoM10_n)),
+       col=GoM10_WE_colors[levels(pop(snps_mlg_GoM10_n))], pch=20, cex=0.8, title='Site')
+dev.off()
+```
+
+# Test whether GoM10's discriminant functions track longitude, latitude, or depth
+```{r Geographic correlations GoM10}
+corr_GoM10 <- analyze_geographic_correlations(
+  dapc_obj = dapc_prior_GoM10, metadata = se_metadata_neutral_GoM10, eigenvalues = eigenvalues_GoM10,
+  site_colors = GoM10_WE_colors, dataset_label = "GoM10",
+  csv_out = "./spatial_correlation_results_GoM10.csv", pdf_out = "./significant_spatial_relationships_GoM10.pdf"
+)
+```
+
+# ----- Pop Struc. _sub/Carolinian ----- 
+Sub: GoM10 + Edisto (174 ind, 10 sites)
+
+Same workflow again, now including the Atlantic site -- this is the subset where the Gulf-vs-Atlantic split becomes the dominant K=2 signal.
+DAPC prior fixed at n.pca=19, n.da=9, same as GoM10, for direct comparability.
+```{r Population Structure sub}
+x.se_sub <- tab(snps_mlg_sub_n, freq=TRUE, NA.method="mean")
+pca.se_sub <- dudi.pca(df = x.se_sub, center = TRUE, scale = FALSE, scannf = FALSE, nf = 15)
+pco.se_sub <- dudi.pco(dist(x.se_sub), scannf=FALSE, nf=3)
+
+pdf('./PCA_PCO_sub.pdf', width = 15, height = 15)
+s.class(pca.se_sub$li, fac=pop(snps_mlg_sub_n), col=c_13sites_WE)
+s.class(pco.se_sub$li, fac=pop(snps_mlg_sub_n), col=c_13sites_WE)
+pca.umap_sub <- umap(pca.se_sub$li)
+s.class(pca.umap_sub$layout, fac=pop(snps_mlg_sub_n), col=c_13sites_WE)
+plot(pca.umap_sub$layout[,1], pca.umap_sub$layout[,2],
+     col=snps_mlg_sub_n$pop, pch=20, cex=2, main='PCA-UMAP sub')
+dev.off()
+
+dapc_a_score_sub <- dapc(snps_mlg_sub_n)
+pdf('./DAPC_denovo_a-optimization_sub.pdf', width = 15, height = 15)
+temp_score_sub <- optim.a.score(dapc_a_score_sub)
+temp_score_sub$best
+dev.off()
+
+pdf('./DAPC_BIC_Kclusters_sub.pdf', width = 15, height = 15)
+grp_sub <- find.clusters(snps_mlg_sub_n, n.pca=nInd(snps_mlg_sub_n), max.n.clust=20)
+dev.off()
+levels(grp_sub$grp) <- c("Atlantic", "EFGB", "Remaining Gulf")  # adjust order after inspecting table()
+
+dapc_noprior_sub <- dapc(snps_mlg_sub_n, grp_sub$grp, n.pca=temp_score_sub$best, n.da=6)
+save(dapc_noprior_sub, file='./dapc_noprior_sub.Rdata')
+
+pdf('./DAPC_noprior_sub.pdf', width = 9, height = 9)
+scatter(dapc_noprior_sub, col=col3)
+dev.off()
+
+# CONFIRMED final DAPC: n.pca=19, n.da=9
+dapc_prior_sub <- dapc(snps_mlg_sub_n, n.pca = 19, n.da = 9)
+save(dapc_prior_sub, file = './dapc_prior_sub.Rdata')
+eigenvalues_sub <- dapc_prior_sub$eig / sum(dapc_prior_sub$eig)
+print(round(eigenvalues_sub, 4))  # DA1/DA2 = 66.2%/19.8%
+
+group_colors_sub <- c_13sites_WE[as.character(pop(snps_mlg_sub_n))]
+k_colors_sub <- c("#88CCEE", "#CC6677", "#7AD151FF")
+xlim_sub <- range(dapc_prior_sub$ind.coord[,1])
+ylim_sub <- range(dapc_prior_sub$ind.coord[,2])
+
+pdf('./dapc_prior_sub_plots_FINAL.pdf', width=18, height=9)
+par(mfrow=c(1,2))
+
+plot(dapc_prior_sub$ind.coord[,1], dapc_prior_sub$ind.coord[,2],
+     col=group_colors_sub, pch=20, cex=2, xlim=xlim_sub, ylim=ylim_sub,
+     xlab=paste('DA1 (', signif(eigenvalues_sub[1]*100, 3), '%)'),
+     ylab=paste('DA2 (', signif(eigenvalues_sub[2]*100, 3), '%)'), main='DAPC with priors - sub')
+pops_sub <- as.character(pop(snps_mlg_sub_n))
+for(site in unique(pops_sub)) {
+  idx <- which(pops_sub == site)
+  coords <- dapc_prior_sub$ind.coord[idx, 1:2, drop=FALSE]
+  centroid <- colMeans(coords)
+  segments(x0=centroid[1], y0=centroid[2], x1=coords[,1], y1=coords[,2],
+           col=c_13sites_WE[site], lwd=0.8)
+}
+points(dapc_prior_sub$ind.coord[,1], dapc_prior_sub$ind.coord[,2],
+       col=group_colors_sub, pch=20, cex=2)
+legend("topright", legend=names(c_13sites_WE[levels(pop(snps_mlg_sub_n))]),
+       col=c_13sites_WE[levels(pop(snps_mlg_sub_n))], pch=20, cex=0.8)
+
+plot(dapc_prior_sub$ind.coord[,1], dapc_prior_sub$ind.coord[,2],
+     col=k_colors_sub[as.integer(grp_sub$grp)], pch=20, cex=2, xlim=xlim_sub, ylim=ylim_sub,
+     xlab=paste('DA1 (', signif(eigenvalues_sub[1]*100, 3), '%)'),
+     ylab=paste('DA2 (', signif(eigenvalues_sub[2]*100, 3), '%)'), main='DAPC colored by cluster - sub')
+legend("topright", legend=levels(grp_sub$grp), col=k_colors_sub[1:nlevels(grp_sub$grp)], pch=20, cex=1.2)
+dev.off()
+
+dapc_prior_sub.umap <- umap(dapc_prior_sub$ind.coord)
+pdf('./UMAP_dapc_prior_sub_sclass.pdf', width = 9, height = 9)
+s.class(dapc_prior_sub.umap$layout, fac=pop(snps_mlg_sub_n),
+        col=c_13sites_WE[levels(pop(snps_mlg_sub_n))])
+dev.off()
+pdf('./UMAP_dapc_prior_sub_points.pdf', width = 9, height = 9)
+plot(dapc_prior_sub.umap$layout[,1], dapc_prior_sub.umap$layout[,2],
+     col=group_colors_sub, pch=20, cex=2, main='DAPC-UMAP Sub', xlab='UMAP 1', ylab='UMAP 2')
+legend('topright', legend=levels(pop(snps_mlg_sub_n)),
+       col=c_13sites_WE[levels(pop(snps_mlg_sub_n))], pch=20, cex=0.8, title='Site')
+dev.off()
+```
+
+# Test whether Sub's discriminant functions track longitude, latitude, or depth 
+```{r Geographic correlations sub}
+corr_sub <- analyze_geographic_correlations(
+  dapc_obj = dapc_prior_sub, metadata = se_metadata_neutral_sub, eigenvalues = eigenvalues_sub,
+  site_colors = c_13sites_WE, dataset_label = "Sub",
+  csv_out = "./spatial_correlation_results_sub.csv", pdf_out = "./significant_spatial_relationships_sub.pdf"
+)
+```
+
+# Combine all four datasets' correlation results into one supplementary table
+N_individuals/N_populations are read directly from each genind object, not hardcoded -- avoids this table drifting out of sync the way GoM10's did. Must run after all four "Geographic correlations" chunks above.
+```{r pop structure supp table}
+dataset_meta <- data.frame(
+  Dataset = c("All", "GoMa", "GoM10", "Sub"),
+  N_individuals = c(
+    nInd(neutral_dataset_final),
+    nInd(snps_mlg_gom_all_n),
+    nInd(snps_mlg_GoM10_n),
+    nInd(snps_mlg_sub_n)
+  ),
+  N_populations = c(
+    nPop(neutral_dataset_final),
+    nPop(snps_mlg_gom_all_n),
+    nPop(snps_mlg_GoM10_n),
+    nPop(snps_mlg_sub_n)
+  )
+)
+
+supp_correlation_table <- rbind(
+  cbind(Dataset = "All",   corr_all$results),
+  cbind(Dataset = "GoMa",  corr_GoMa$results),
+  cbind(Dataset = "GoM10", corr_GoM10$results),
+  cbind(Dataset = "Sub",   corr_sub$results)
+)
+
+supp_correlation_table <- merge(dataset_meta, supp_correlation_table, by = "Dataset")
+
+supp_correlation_table <- supp_correlation_table[, c(
+  "Dataset", "N_individuals", "N_populations",
+  "DiscriminantFunction", "Geographic_Variable",
+  "Eigenvalue_Proportion", "Correlation", "P_value", "Significance"
+)]
+
+# merge() alphabetizes Dataset by default -- restore All -> GoMa -> GoM10 -> Sub order
+supp_correlation_table$Dataset <- factor(supp_correlation_table$Dataset,
+                                          levels = c("All", "GoMa", "GoM10", "Sub"))
+supp_correlation_table <- supp_correlation_table[order(supp_correlation_table$Dataset,
+                                                        supp_correlation_table$Geographic_Variable,
+                                                        supp_correlation_table$DiscriminantFunction), ]
+
+write.csv(supp_correlation_table, "./supplementary_table_geographic_correlations.csv", row.names = FALSE)
+```
+
+============================================================
+-------------------------FST ANALYSES-----------------------
+============================================================
+Pairwise FST (Weir & Cockerham 1984) via SNPRelate.
+
+# FST-All populations
+```{r FST All pops}
+# Load required packages
+#library(SNPRelate)
+#library(gdsfmt)
+
+# First, we need to create a GDS file from genind object
+# Convert genind data to a matrix format SNPRelate can use
+genmat_all <- as.matrix(neutral_dataset_final@tab)
+
+# Get population information
+pop_info_all <- neutral_dataset_final@pop
+
+# Create the GDS file with explicit formatting
+snpgdsCreateGeno("temp.gds",
+                 genmat = genmat_all,
+                 sample.id = rownames(genmat_all),
+                 snp.id = colnames(genmat_all),
+                 snp.chromosome = rep(1, ncol(genmat_all)),
+                 snp.position = 1:ncol(genmat_all),
+                 snp.allele = rep("A/B", ncol(genmat_all)),
+                 snpfirstdim = FALSE)
+
+# Open/Reopen GDS file if needed
+genofile <- snpgdsOpen("temp.gds")
+
+# Create empty FST matrix
+pops <- levels(pop_info_all)  # Use levels instead of unique to maintain order
+fst_matrix_all <- matrix(NA, nrow=length(pops), ncol=length(pops))
+rownames(fst_matrix_all) <- pops
+colnames(fst_matrix_all) <- pops
+
+# Modified pairwise FST calculation
+for(i in 1:(length(pops)-1)) {
+    for(j in (i+1):length(pops)) {
+        # Get samples for this pair of populations
+        pop_pair <- pop_info_all %in% c(pops[i], pops[j])
+        pop_subset <- factor(pop_info_all[pop_pair])  # Keep as factor
+        
+        # Calculate FST for this pair
+        fst_pair <- snpgdsFst(genofile, 
+                             population = pop_subset,
+                             method = "W&C84",
+                             sample.id = rownames(genmat_all)[pop_pair])
+        
+        # Store the FST value
+        fst_matrix_all[i,j] <- fst_pair$Fst
+        fst_matrix_all[j,i] <- fst_pair$Fst
+    }
+}
+
+# Fill diagonal with zeros
+diag(fst_matrix_all) <- 0
+
+# Close GDS file
+snpgdsClose(genofile)
+
+# View results
+print(fst_matrix_all)
+
+# Create melted data frame for plotting
+melted_fst_all <- reshape2::melt(fst_matrix_all)
+names(melted_fst_all) <- c("SITE1", "SITE2", "FST")
+
+# Create heatmap
+fst_heatmap_all <- ggplot(data = melted_fst_all, aes(SITE1, SITE2, fill = FST)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = round(FST, 3)), color = "white") +
+  scale_fill_viridis_c(option = "inferno") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 20),
+    axis.text.x = element_text(angle = 45, vjust = 1, size = 14, hjust = 1)
+  ) +
+  coord_fixed()
+
+# Display plot
+print(fst_heatmap_all)
+
+# Save plot if desired
+ggsave("./FST_heatmap_all.pdf", fst_heatmap_all, width = 10, height = 10)
+```
+
+# Plot FST all pops heatmap west to east 
+```{r plot fst all pops heatmap w-e}
+# First, we need to create a GDS file from genind object
+# Convert genind data to a matrix format SNPRelate can use
+genmat_all <- as.matrix(neutral_dataset_final@tab)
+# Get population information
+pop_info_all <- neutral_dataset_final@pop
+# Create the GDS file with explicit formatting
+snpgdsCreateGeno("temp.gds",
+                 genmat = genmat_all,
+                 sample.id = rownames(genmat_all),
+                 snp.id = colnames(genmat_all),
+                 snp.chromosome = rep(1, ncol(genmat_all)),
+                 snp.position = 1:ncol(genmat_all),
+                 snp.allele = rep("A/B", ncol(genmat_all)),
+                 snpfirstdim = FALSE)
+# Open/Reopen GDS file if needed
+genofile <- snpgdsOpen("temp.gds")
+
+# Define the west-to-east ordering
+WE_order_all <- c("WFGB", "EFGB", "Bright", "Geyer", "Elvers", "McGrail", "Bouma", "Alderdice", "Diaphus", "FTR", "AAR", "RTR", "Edisto")
+
+# Create empty FST matrix
+pops <- levels(pop_info_all)  # Use levels instead of unique to maintain order
+fst_matrix_all <- matrix(NA, nrow=length(pops), ncol=length(pops))
+rownames(fst_matrix_all) <- pops
+colnames(fst_matrix_all) <- pops
+
+# Modified pairwise FST calculation
+for(i in 1:(length(pops)-1)) {
+    for(j in (i+1):length(pops)) {
+        # Get samples for this pair of populations
+        pop_pair <- pop_info_all %in% c(pops[i], pops[j])
+        pop_subset <- factor(pop_info_all[pop_pair])  # Keep as factor
+        
+        # Calculate FST for this pair
+        fst_pair <- snpgdsFst(genofile, 
+                             population = pop_subset,
+                             method = "W&C84",
+                             sample.id = rownames(genmat_all)[pop_pair])
+        
+        # Store the FST value
+        fst_matrix_all[i,j] <- fst_pair$Fst
+        fst_matrix_all[j,i] <- fst_pair$Fst
+    }
+}
+
+# Fill diagonal with zeros
+diag(fst_matrix_all) <- 0
+
+# Close GDS file
+snpgdsClose(genofile)
+
+# View original FST matrix
+print("Original FST matrix:")
+print(fst_matrix_all)
+
+# Now reorder the matrix according to WE_order_all
+# First, ensure all names in WE_order_all are in the matrix
+valid_order <- WE_order_all[WE_order_all %in% rownames(fst_matrix_all)]
+
+# Reorder the matrix based on valid west-to-east order
+fst_matrix_ordered <- fst_matrix_all[valid_order, valid_order]
+print("FST matrix ordered from West to East:")
+print(fst_matrix_ordered)
+
+# Create melted data frame for plotting with the ordered matrix
+melted_fst_ordered <- reshape2::melt(fst_matrix_ordered)
+names(melted_fst_ordered) <- c("SITE1", "SITE2", "FST")
+
+# Convert SITE1 and SITE2 to factors with levels in the west-to-east order
+# This ensures the heatmap displays populations in the correct order
+melted_fst_ordered$SITE1 <- factor(melted_fst_ordered$SITE1, levels = valid_order)
+melted_fst_ordered$SITE2 <- factor(melted_fst_ordered$SITE2, levels = valid_order)
+
+# Create heatmap with west-to-east ordering
+fst_heatmap_ordered <- ggplot(data = melted_fst_ordered, aes(SITE1, SITE2, fill = FST)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = round(FST, 3)), color = "white") +
+  scale_fill_viridis_c(option = "inferno") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 20),
+    axis.text.x = element_text(angle = 45, vjust = 1, size = 14, hjust = 1),
+    axis.title = element_text(size = 16)
+  ) +
+  labs(x = "SITE1", 
+       y = "SITE2",
+       title = "Pairwise FST Values - All Populations, west to east") +
+  coord_fixed()
+
+# Display the heatmap
+print(fst_heatmap_ordered)
+
+# Save the heatmap
+ggsave("FST_heatmap_all_WE.pdf", fst_heatmap_ordered, width = 12, height = 10, dpi = 300)
+```
+
+# FST- sub dataset
+```{r FST Edisto + GoM10 = sub}
+# Install and load required packages
+#library(SNPRelate)
+#library(gdsfmt)
+
+# First, we need to create a GDS file from genind object
+# Convert genind data to a matrix format SNPRelate can use
+genmat_sub <- as.matrix(snps_mlg_sub_n@tab)
+
+# Get population information
+pop_info_sub <- snps_mlg_sub_n@pop
+
+# Create the GDS file with explicit formatting
+snpgdsCreateGeno("temp.gds.sub",
+                 genmat = genmat_sub,
+                 sample.id = rownames(genmat_sub),
+                 snp.id = colnames(genmat_sub),
+                 snp.chromosome = rep(1, ncol(genmat_sub)),
+                 snp.position = 1:ncol(genmat_sub),
+                 snp.allele = rep("A/B", ncol(genmat_sub)),
+                 snpfirstdim = FALSE)
+
+# Open/Reopen GDS file if needed
+genofile <- snpgdsOpen("temp.gds.sub")
+
+# Create empty FST matrix
+pops_sub <- levels(pop_info_sub)  # Use levels instead of unique to maintain order
+fst_matrix_sub <- matrix(NA, nrow=length(pops_sub), ncol=length(pops_sub))
+rownames(fst_matrix_sub) <- pops_sub
+colnames(fst_matrix_sub) <- pops_sub
+
+# Modified pairwise FST calculation
+for(i in 1:(length(pops_sub)-1)) {
+    for(j in (i+1):length(pops_sub)) {
+        # Get samples for this pair of populations
+        pop_pair_sub <- pop_info_sub %in% c(pops_sub[i], pops_sub[j])
+        pop_subset_sub <- factor(pop_info_sub[pop_pair_sub])  # Keep as factor
+        
+        # Calculate FST for this pair
+        fst_pair_sub <- snpgdsFst(genofile, 
+                             population = pop_subset_sub,
+                             method = "W&C84",
+                             sample.id = rownames(genmat_sub)[pop_pair_sub])
+        
+        # Store the FST value
+        fst_matrix_sub[i,j] <- fst_pair_sub$Fst
+        fst_matrix_sub[j,i] <- fst_pair_sub$Fst
+    }
+}
+
+# Fill diagonal with zeros
+diag(fst_matrix_sub) <- 0
+
+# Close GDS file
+snpgdsClose(genofile)
+
+# View results
+print(fst_matrix_sub)
+
+# Create melted data frame for plotting
+melted_fst_sub <- reshape2::melt(fst_matrix_sub)
+names(melted_fst_sub) <- c("SITE1", "SITE2", "FST")
+
+# Create heatmap
+fst_heatmap_sub <- ggplot(data = melted_fst_sub, aes(SITE1, SITE2, fill = FST)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = round(FST, 3)), color = "white") +
+  scale_fill_viridis_c(option = "inferno") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 20),
+    axis.text.x = element_text(angle = 45, vjust = 1, size = 14, hjust = 1)
+  ) +
+  coord_fixed()
+
+# Display plot
+print(fst_heatmap_sub)
+
+# Save plot
+ggsave("./FST_heatmap_sub.pdf", fst_heatmap_sub, width = 10, height = 10)
+
+```
+
+
+# Dendrogram Analysis - ALL POPULATIONS 
+```{r dendrogram all pops}
+# Create and save dendrogram - ALL POPULATIONS
+hc_all <- hclust(as.dist(fst_matrix_all))
+pdf('FST_dendropgram_all.pdf')
+fst_dendro_all <- ggdendrogram(hc_all)
+print(fst_dendro_all)
+dev.off()
+
+# Create and save dendrogram - ALL pops > 10 indv
+hc_sub <- hclust(as.dist(fst_matrix_sub))
+pdf('FST_dendropgram_sub.pdf')
+fst_dendro_sub <- ggdendrogram(hc_sub)
+print(fst_dendro_sub)
+dev.off()
+
+# Make sure FST values are numeric before melting
+#fst_matrix_sub[] <- lapply(fst_matrix_sub, as.numeric)
+
+# Get dendrogram order directly from the hclust object
+fst_order <- pops_sub[hc_sub$order]
+
+# Reorder the FST matrix
+fst_matrix_ordered <- fst_matrix_sub[fst_order, fst_order]
+
+# Create melted data frame for plotting with ordered data
+melted_fst_ordered <- reshape2::melt(fst_matrix_ordered)
+names(melted_fst_ordered) <- c("SITE1", "SITE2", "FST")
+
+# Create heatmap with ordered data
+fst_heatmap_ordered <- ggplot(data = melted_fst_ordered, aes(SITE1, SITE2, fill = FST)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = round(FST, 3)), color = "white") +
+  scale_fill_viridis_c(option = "inferno") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 20),
+    axis.text.x = element_text(angle = 45, vjust = 1, size = 14, hjust = 1)
+  ) +
+  coord_fixed()
+
+# Display ordered heatmap
+print(fst_heatmap_ordered)
+
+# Save plot
+ggsave("./FST_heatmap_Dordered.pdf", fst_heatmap_ordered, width = 10, height = 10)
+
+# Plot just GoM populations greater than 10 individuals, ordered by dendrogram
+hc_GoM10 <- hclust(as.dist(fst_matrix_sub))
+pdf('FST_dendropgram_sub.pdf')
+fst_dendro_sub <- ggdendrogram(hc_sub)
+print(fst_dendro_sub)
+```
+
+# Dendrogram Analysis - subsetted for GoM10
+```{r dendrogram GoM10}
+# Define populations to keep (all except Edisto)
+populations_to_keep <- setdiff(pops_sub, "Edisto")
+
+# Create GoM10 FST matrix (Gulf of Mexico 10 populations, excluding Edisto)
+fst_matrix_GoM10 <- fst_matrix_sub[populations_to_keep, populations_to_keep]
+
+# Check dimensions of new matrix
+dim(fst_matrix_GoM10)
+
+# Perform hierarchical clustering on the GoM10 matrix
+hc_GoM10 <- hclust(as.dist(fst_matrix_GoM10))
+pdf('FST_dendrogram_GoM10.pdf')
+fst_dendro_GoM10 <- ggdendrogram(hc_GoM10)
+print(fst_dendro_GoM10)
+dev.off()
+
+# Get the order from the dendrogram
+fst_order_GoM10 <- populations_to_keep[hc_GoM10$order]
+
+# Reorder the matrix according to clustering
+fst_matrix_ordered_GoM10 <- fst_matrix_GoM10[fst_order_GoM10, fst_order_GoM10]
+
+# Create melted data frame for heatmap
+melted_fst_GoM10 <- reshape2::melt(fst_matrix_ordered_GoM10)
+names(melted_fst_GoM10) <- c("SITE1", "SITE2", "FST")
+
+# Create heatmap
+fst_heatmap_GoM10 <- ggplot(data = melted_fst_GoM10, aes(SITE1, SITE2, fill = FST)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = round(FST, 3)), color = "white") +
+  scale_fill_viridis_c(option = "inferno") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 20),
+    axis.text.x = element_text(angle = 45, vjust = 1, size = 14, hjust = 1)
+  ) +
+  coord_fixed() +
+  labs(title = "FST Heatmap (Gulf of Mexico 10 populations)")
+
+# Display heatmap
+print(fst_heatmap_GoM10)
+
+# Save heatmap
+ggsave("FST_heatmap_GoM10.pdf", fst_heatmap_GoM10, width = 10, height = 8)
+```
+
+# West-east ordered FST heatmap
+# Using matrix extracted from fst_swiftia object
+```{r West-east ordered FST heatmap}
+# Create West-East ordered version
+WE_order <- c('EFGB','Elvers','McGrail','Bouma','Alderdice','Diaphus','FTR','AAR','RTR','Edisto')
+
+# For the full dataset (including Edisto)
+# Check if all names in WE_order exist in pops_sub
+all(WE_order %in% rownames(fst_matrix_sub))
+
+# Reorder the full matrix by West-East order
+fst_matrix_WE <- fst_matrix_sub[WE_order, WE_order]
+
+# Create melted data frame for the full dataset (Edisto + GoM pops>10)
+melted_fst_WE <- reshape2::melt(fst_matrix_WE)
+names(melted_fst_WE) <- c("SITE1", "SITE2", "FST")
+
+# Create heatmap for the full dataset
+fst_heatmap_WE_sub <- ggplot(data = melted_fst_WE, aes(SITE1, SITE2, fill = FST)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = round(FST, 3)), color = "white") +
+  scale_fill_viridis_c(option = "inferno") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 20),
+    axis.text.x = element_text(angle = 45, vjust = 1, size = 14, hjust = 1)
+  ) +
+  coord_fixed()
+
+# Display full heatmap
+print(fst_heatmap_WE_sub)
+
+# Save full heatmap
+ggsave("./FST_heatmap_WE_sub.pdf", fst_heatmap_WE_sub, width = 10, height = 8)
+
+# GoM pops> 10 indv. without Edisto
+# First make sure RTR is in your subset list (it was missing in your WE_order_sub)
+WE_order_GoM10 <- c('EFGB','Elvers','McGrail','Bouma','Alderdice','Diaphus','FTR','AAR','RTR')
+
+# Check if all names in WE_order_sub exist in the subset
+all(WE_order_GoM10 %in% rownames(fst_matrix_GoM10))
+
+# Reorder the GoM10 matrix by West-East order
+fst_matrix_GoM10_WE <- fst_matrix_GoM10[WE_order_GoM10, WE_order_GoM10]
+
+# Create melted data frame for the subset
+melted_fst_GoM10_WE <- reshape2::melt(fst_matrix_GoM10_WE)
+names(melted_fst_GoM10_WE) <- c("SITE1", "SITE2", "FST")
+
+# Create heatmap for the subset
+fst_heatmap_GoM10_WE <- ggplot(data = melted_fst_GoM10_WE, aes(SITE1, SITE2, fill = FST)) +
+  geom_tile(color = "black") +
+  geom_text(aes(label = round(FST, 3)), color = "white") +
+  scale_fill_viridis_c(option = "inferno") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 20),
+    axis.text.x = element_text(angle = 45, vjust = 1, size = 14, hjust = 1)
+  ) +
+  coord_fixed()
+
+# Display subset heatmap
+print(fst_heatmap_GoM10_WE)
+
+# Save subset heatmap
+ggsave("./FST_heatmap_GoM10_WE.pdf", fst_heatmap_GoM10_WE, width = 10, height = 8)
+```
+
+Write out FST matricies
+```{r write-fst-matrices}
+write.csv(fst_matrix_GoM10, "FST_matrix_GoM10.csv", row.names = TRUE)
+write.csv(fst_matrix_sub, "FST_matrix_sub.csv", row.names = TRUE)
+write.csv(fst_matrix_all, "FST_matrix_all.csv", row.names = TRUE)
+```
+
+================================================================
+----------------------Linkage Disequilibrium--------------------
+================================================================
+Calculating Linkage Disequilibrium using SNPrealte
+Linkage disequilibrium (LD) analysis examines the non-random association of alleles at different loci in a population. High LD can result from various evolutionary forces including selection, genetic drift, population structure, and physical linkage between genomic regions. Identifying and accounting for LD patterns is essential for downstream population genetic analyses, as linked SNPs violate assumptions of independence in many statistical tests.
+
+Approach:
+1. Convert the filtered VCF file containing biallelic SNPs to a GDS format for efficient processing using SNPRelate
+2. Exploratory LD analysis - Calculate pairwise LD using a composite method on the first 200 SNPs, generate a heatmap visualization of the LD matrix to ID presence of SNP clusters with high LD
+3. LD-base SNP Pruning - Perform  genome-wide LD pruning with the following parameters:
+LD threshold: 0.2 (moderate stringency)
+MAF filter: 0.05 (removed rare variants)
+Missing data threshold: 0.1 (removed SNPs with >10% missing data)
+4. Post-pruning Validation: Generate a LD heatmap with the pruned SNP set to confirm reduction in LD. Then conduct PCA on the pruned dataset to examine population structure
+
+After reviewing initial results, you may need to implement a more stringent approach that better accounts for the genomic context:
+1. Sliding Window Implementation:
+Adds a physical distance-based sliding window of 500kb to better account for the genomic architecture by considering physical linkage
+2. More Stringent LD Threshold: Reduce the LD threshold from 0.2 to 0.1 to ensures greater independence among retained SNPs
+3. Visualize
+
+Advantages of pruning approach
+- Reduces redundancy in the dataset by removing highly correlated SNPs
+- Decreases the impact of physical linkage on population structure inferences
+- Produces a more manageable dataset size while preserving the most informative markers
+- Improves the validity of statistical tests that assume marker independence
+- Provides a clearer signal of population differentiation unconfounded by linkage
+
+# Load the full VCF once
+Read once here and reused by all four population-subset LD-pruning chunks below
+```{r ld-load-vcf}
+# library (SNPRelate)
+vcf.fn_full <- "swiftia_snps_90_cov_maf_bi.recode.vcf"
+vcf_full <- read.vcfR(vcf.fn_full)
+```
+
+# Linkage Disequilibrium Analysis, starting with clone corrected neutral dataset
+
+# LD 0.2, all populations
+```{r LD 0.2 all pops}
+all_samples <- rownames(pop_code_all)  # Or indNames(neutral_dataset_final)
+
+# Subset the VCF to the All samples and convert to GDS
+vcf_all <- vcf_full[, c(1, which(colnames(vcf_full@gt)[-1] %in% all_samples) + 1)]
+vcf.fn_all <- "swiftia_snps_all.vcf"
+write.vcf(vcf_all, file = vcf.fn_all)
+snpgdsVCF2GDS(vcf.fn_all, "swiftia_snps_all.gds", method = "biallelic.only")
+
+genofile_all <- snpgdsOpen("swiftia_snps_all.gds")
+geno_all <- snpgdsGetGeno(genofile_all, sample.id = all_samples)
+
+snp.id_all <- read.gdsn(index.gdsn(genofile_all, "snp.id"))
+snp.position_all <- read.gdsn(index.gdsn(genofile_all, "snp.position"))
+snp.chromosome_all <- read.gdsn(index.gdsn(genofile_all, "snp.chromosome"))
+snp.allele_all <- read.gdsn(index.gdsn(genofile_all, "snp.allele"))
+
+snpgdsClose(genofile_all)
+
+# Rebuild as a clean subsetted GDS file
+snpgdsCreateGeno("swiftia_snps_all.n.gds",
+                 genmat = geno_all,
+                 sample.id = all_samples,
+                 snp.id = snp.id_all,
+                 snp.position = snp.position_all,
+                 snp.chromosome = snp.chromosome_all,
+                 snp.allele = snp.allele_all,
+                 snpfirstdim = FALSE)
+
+genofile_all.n <- snpgdsOpen("swiftia_snps_all.n.gds")
+
+# Initial LD on first 200 SNPs, for visualization
+snpset_all.n <- read.gdsn(index.gdsn(genofile_all.n, "snp.id"))[1:200]
+L1_all <- snpgdsLDMat(genofile_all.n,
+                      snp.id = snpset_all.n,
+                      method = "composite",
+                      slide = -1,
+                      num.thread = 10)
+
+pdf('LD_heatmap_all.pdf')
+image(abs(L1_all$LD),
+      col = terrain.colors(64),
+      main = "Linkage Disequilibrium Heatmap\n(All Populations)",
+      xlab = "SNP Position",
+      ylab = "SNP Position")
+dev.off()
+
+# LD-based SNP pruning
+set.seed(1000)
+snpset_pruned_all <- snpgdsLDpruning(genofile_all.n,
+                                    autosome.only = FALSE,
+                                    ld.threshold = 0.2,
+                                    num.thread = 8,
+                                    maf = 0.05,
+                                    missing.rate = 0.1)
+
+snpset.id.all <- unlist(snpset_pruned_all)
+
+L2_all <- snpgdsLDMat(genofile_all.n,
+                      snp.id = snpset.id.all,
+                      method = "composite",
+                      slide = -1,
+                      num.thread = 8)
+
+pdf('LD_heatmap_pruned_all.pdf')
+image(abs(L2_all$LD),
+      col = terrain.colors(64),
+      main = "LD Heatmap After Pruning\n(All Populations)",
+      xlab = "SNP Position",
+      ylab = "SNP Position")
+dev.off()
+
+# Alternate heatmap, better color palette for LD variation
+pdf('./LD_heatmap_pruned_all_red.pdf', width = 7, height = 7, compress = TRUE)
+colors <- colorRampPalette(c("white", "lightyellow", "orange", "red", "darkred"))(100)
+image(abs(L2_all$LD),
+      col = colors,
+      main = "LD Heatmap After Pruning\n(All Populations)",
+      xlab = "SNP Position",
+      ylab = "SNP Position")
+dev.off()
+
+# Number of SNPs before pruning:
+print(length(read.gdsn(index.gdsn(genofile_all.n, "snp.id"))))
+# Number of SNPs after pruning:
+print(length(snpset.id.all))
+# Proportion of SNPs retained:
+print(length(snpset.id.all) / length(read.gdsn(index.gdsn(genofile_all.n, "snp.id"))))
+
+# PCA on pruned SNPs, to verify the effect of LD pruning
+pca_all <- snpgdsPCA(genofile_all.n,
+                     snp.id = snpset.id.all,
+                     autosome.only = FALSE,
+                     num.thread = 8)
+
+tab_all <- data.frame(
+    sample.id = pca_all$sample.id,
+    pop = pop_code_all$STRATA,
+    EV1 = pca_all$eigenvect[, 1],
+    EV2 = pca_all$eigenvect[, 2],
+    stringsAsFactors = FALSE
+)
+
+pc.percent_all <- pca_all$varprop * 100
+head(round(pc.percent_all, 2))
+
+pdf('./PCA_LD_pruned_all.pdf')
+plot(tab_all$EV1, tab_all$EV2,
+     col = c13_sites[as.character(tab_all$pop)],
+     pch = 16,
+     xlab = paste0("PC1 (", round(pc.percent_all[1], 2), "%)"),
+     ylab = paste0("PC2 (", round(pc.percent_all[2], 2), "%)"),
+     main = "PCA of LD-Pruned SNPs\n(All Populations)")
+
+legend("bottomleft",
+       legend = names(c13_sites),
+       col = c13_sites,
+       pch = 16,
+       cex = 0.8)
+dev.off()
+
+saveRDS(snpset.id.all, "./pruned_snps_all.rds")
+```
+
+
+# More stringent LD pruning with sliding window - all pops
+```{r LD 0.1 all pops}
+set.seed(1000)
+snpset_pruned_all <- snpgdsLDpruning(genofile_all.n,
+                                    autosome.only = FALSE,
+                                    ld.threshold = 0.1,     # More stringent threshold
+                                    slide.max.bp = 500000,  # 500kb sliding window
+                                    maf = 0.05,
+                                    missing.rate = 0.1,
+                                    num.thread = 9)
+
+snpset.id.all <- unlist(snpset_pruned_all)
+
+L2_all <- snpgdsLDMat(genofile_all.n,
+                      snp.id = snpset.id.all,
+                      method = "composite",
+                      slide = 20,    # Look at nearby SNPs only
+                      num.thread = 8)
+
+while (!is.null(dev.list())) dev.off()
+
+pdf('./LD_heatmap_pruned_improved_all.pdf', width = 7, height = 7, compress = TRUE)
+colors <- colorRampPalette(c("white", "lightyellow", "orange", "red", "darkred"))(100)
+image(abs(L2_all$LD),
+      col = colors,
+      main = "LD Improved Pruning",
+      xlab = "SNP Position",
+      ylab = "SNP Position")
+
+legend_breaks <- seq(0, 1, by = 0.2)
+legend("right",
+       legend = legend_breaks,
+       fill = colors[seq(1, length(colors), length.out = length(legend_breaks))],
+       title = "R\u00b2",
+       cex = 0.8)
+dev.off()
+
+ld_values_all <- abs(L2_all$LD[upper.tri(L2_all$LD)])
+
+# Summary of LD values after improved pruning:
+print(summary(ld_values_all))
+# Number of SNPs retained after pruning:
+print(length(snpset.id.all))
+
+# PCA on pruned SNPs
+pca_all <- snpgdsPCA(genofile_all.n,
+                        snp.id = snpset.id.all,
+                        autosome.only = FALSE,
+                        num.thread = 8)
+
+pc.percent_all <- pca_all$varprop * 100
+# Variance explained by first 10 PCs
+print(round(pc.percent_all[1:10], 2))
+
+tab_pca_all <- data.frame(
+    sample.id = pca_all$sample.id,
+    pop = pop_code_all[pca_all$sample.id, "STRATA"],
+    PC1 = pca_all$eigenvect[, 1],
+    PC2 = pca_all$eigenvect[, 2],
+    PC3 = pca_all$eigenvect[, 3],
+    stringsAsFactors = FALSE
+)
+
+while (!is.null(dev.list())) dev.off()
+pdf("./PCA_pruned_SNPs_01.pdf", width = 8, height = 7)
+
+pca_all_1_2 <- ggplot(tab_pca_all, aes(x = PC1, y = PC2, color = pop)) +
+    geom_point(size = 3, alpha = 0.8) +
+    scale_color_manual(values = c13_sites, breaks = WE_order_all,
+                      guide = guide_legend(title = "Site")) +
+    theme_bw() +
+    xlab(paste0("PC1 (", round(pc.percent_all[1], 2), "%)")) +
+    ylab(paste0("PC2 (", round(pc.percent_all[2], 2), "%)")) +
+    ggtitle("PCA of LD-pruned SNPs") +
+    theme(legend.title = element_blank(),
+          legend.position = "right",
+          plot.title = element_text(hjust = 0.5),
+          panel.grid.major = element_line(color = "gray90"),
+          panel.grid.minor = element_line(color = "gray95"))
+
+print(pca_all_1_2)
+
+par(mfrow = c(1, 1))
+barplot(pc.percent_all[1:10],
+        names.arg = paste0("PC", 1:10),
+        col = mypal[1],
+        ylab = "Percent Variance Explained",
+        main = "Scree Plot")
+dev.off()
+
+pdf("./PCA_PC1_PC3_pruned_SNPs_01.pdf", width = 8, height = 7)
+ggplot(tab_pca_all, aes(x = PC1, y = PC3, color = pop)) +
+    geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c13_sites, breaks = WE_order_all,
+                      guide = guide_legend(title = "Site")) +
+    theme_bw() +
+    xlab(paste0("PC1 (", round(pc.percent_all[1], 2), "%)")) +
+    ylab(paste0("PC3 (", round(pc.percent_all[3], 2), "%)")) +
+    ggtitle("PCA of LD-pruned SNPs (PC1 vs PC3)") +
+    theme(legend.title = element_blank(),
+          legend.position = "right",
+          plot.title = element_text(hjust = 0.5))
+dev.off()
+
+# Summary by population:
+print(table(tab_pca_all$pop))
+
+saveRDS(list(pca = pca_all,
+             variance = pc.percent_all,
+             data = tab_pca_all),
+        "./pca_results_pruned_all01.rds")
+```
+
+# LD 0.1, stringent threshold - Edisto + GoM >10 (Sub)
+```{r LD 0.1 sub}
+# vcf_full already loaded above (ld-load-vcf chunk)
+sub_samples <- rownames(pop_code_sub)
+vcf_sub <- vcf_full[, c(1, which(colnames(vcf_full@gt)[-1] %in% sub_samples) + 1)]
+vcf.fn_sub <- "swiftia_snps_sub.vcf"
+write.vcf(vcf_sub, file = vcf.fn_sub)
+snpgdsVCF2GDS(vcf.fn_sub, "swiftia_snps_sub.gds", method = "biallelic.only")
+
+genofile_sub <- snpgdsOpen("swiftia_snps_sub.gds")
+geno_sub <- snpgdsGetGeno(genofile_sub, sample.id = sub_samples)
+
+snp.id_sub <- read.gdsn(index.gdsn(genofile_sub, "snp.id"))
+snp.position_sub <- read.gdsn(index.gdsn(genofile_sub, "snp.position"))
+snp.chromosome_sub <- read.gdsn(index.gdsn(genofile_sub, "snp.chromosome"))
+snp.allele_sub <- read.gdsn(index.gdsn(genofile_sub, "snp.allele"))
+
+snpgdsClose(genofile_sub)
+
+snpgdsCreateGeno("swiftia_snps_subset_sub.gds",
+                 genmat = geno_sub,
+                 sample.id = sub_samples,
+                 snp.id = snp.id_sub,
+                 snp.position = snp.position_sub,
+                 snp.chromosome = snp.chromosome_sub,
+                 snp.allele = snp.allele_sub,
+                 snpfirstdim = FALSE)
+
+genofile_sub <- snpgdsOpen("swiftia_snps_subset_sub.gds")
+
+set.seed(1000)
+snpset_pruned_sub <- snpgdsLDpruning(genofile_sub,
+                                    autosome.only = FALSE,
+                                    ld.threshold = 0.1,
+                                    slide.max.bp = 500000,
+                                    maf = 0.05,
+                                    missing.rate = 0.1,
+                                    num.thread = 8)
+
+snpset.id.sub <- unlist(snpset_pruned_sub)
+
+L2_sub <- snpgdsLDMat(genofile_sub,
+                      snp.id = snpset.id.sub,
+                      method = "composite",
+                      slide = 20,
+                      num.thread = 8)
+
+while (!is.null(dev.list())) dev.off()
+
+pdf('./LD_heatmap_pruned_sub.pdf', width = 7, height = 7, compress = TRUE)
+colors <- colorRampPalette(c("white", "lightyellow", "orange", "red", "darkred"))(100)
+image(abs(L2_sub$LD),
+      col = colors,
+      main = "LD Heatmap After Pruning\n(Edisto and GoM Populations > 10 indv.)",
+      xlab = "SNP Position",
+      ylab = "SNP Position")
+
+legend_breaks <- seq(0, 1, by = 0.2)
+legend("right",
+       legend = legend_breaks,
+       fill = colors[seq(1, length(colors), length.out = length(legend_breaks))],
+       title = "R\u00b2",
+       cex = 0.8)
+dev.off()
+
+ld_values_sub <- abs(L2_sub$LD[upper.tri(L2_sub$LD)])
+
+# Summary of LD values after pruning:
+print(summary(ld_values_sub))
+# Number of SNPs before pruning:
+print(length(read.gdsn(index.gdsn(genofile_sub, "snp.id"))))
+# Number of SNPs after pruning:
+print(length(snpset.id.sub))
+# Proportion of SNPs retained:
+print(length(snpset.id.sub) / length(read.gdsn(index.gdsn(genofile_sub, "snp.id"))))
+
+pca_sub <- snpgdsPCA(genofile_sub,
+                     snp.id = snpset.id.sub,
+                     autosome.only = FALSE,
+                     num.thread = 8)
+
+pc.percent_sub <- pca_sub$varprop * 100
+# Variance explained by first 10 PCs:
+print(round(pc.percent_sub[1:10], 2))
+
+tab_pca_sub <- data.frame(
+    sample.id = pca_sub$sample.id,
+    pop = pop_code_sub[pca_sub$sample.id, "STRATA"],
+    PC1 = pca_sub$eigenvect[, 1],
+    PC2 = pca_sub$eigenvect[, 2],
+    PC3 = pca_sub$eigenvect[, 3],
+    stringsAsFactors = FALSE
+)
+
+# WE_order_sub is already defined
+pdf("./PCA_pruned_SNPs_sub.pdf", width = 8, height = 7)
+
+pca_sub_1_2 <- ggplot(tab_pca_sub, aes(x = PC1, y = PC2, color = pop)) +
+    geom_point(size = 3, alpha = 0.8) +
+    scale_color_manual(values = c13_sites[WE_order_sub],
+                      breaks = WE_order_sub,
+                      guide = guide_legend(title = "Site")) +
+    theme_bw() +
+    xlab(paste0("PC1 (", round(pc.percent_sub[1], 2), "%)")) +
+    ylab(paste0("PC2 (", round(pc.percent_sub[2], 2), "%)")) +
+    ggtitle("PCA of LD-pruned SNPs\n(Edisto and GoM Populations > 10 indv.)") +
+    theme(legend.title = element_blank(),
+          legend.position = "right",
+          plot.title = element_text(hjust = 0.5),
+          panel.grid.major = element_line(color = "gray90"),
+          panel.grid.minor = element_line(color = "gray95"))
+
+print(pca_sub_1_2)
+dev.off()
+
+saveRDS(list(pca = pca_sub,
+             variance = pc.percent_sub,
+             data = tab_pca_sub,
+             pruned_snps = snpset.id.sub),
+        "./pca_results_pruned_sub.rds")
+
+snpgdsClose(genofile_sub)
+```
+
+
+#LD 0.1 stringent threshold - All GoM _GoMa
+```{r LD 0.1 GoMa}
+# vcf_full already loaded above (ld-load-vcf chunk)
+GoMa_samples <- rownames(pop_code_GoMa)
+vcf_GoMa <- vcf_full[, c(1, which(colnames(vcf_full@gt)[-1] %in% GoMa_samples) + 1)]
+vcf.fn_GoMa <- "swiftia_snps_GoMa.vcf"
+write.vcf(vcf_GoMa, file = vcf.fn_GoMa)
+snpgdsVCF2GDS(vcf.fn_GoMa, "swiftia_snps_GoMa.gds", method = "biallelic.only")
+
+genofile_GoMa <- snpgdsOpen("swiftia_snps_GoMa.gds")
+geno_GoMa <- snpgdsGetGeno(genofile_GoMa, sample.id = GoMa_samples)
+# Genotype matrix: 176 samples X 23869 SNPs
+
+snp.id_GoMa <- read.gdsn(index.gdsn(genofile_GoMa, "snp.id"))
+snp.position_GoMa <- read.gdsn(index.gdsn(genofile_GoMa, "snp.position"))
+snp.chromosome_GoMa <- read.gdsn(index.gdsn(genofile_GoMa, "snp.chromosome"))
+snp.allele_GoMa <- read.gdsn(index.gdsn(genofile_GoMa, "snp.allele"))
+
+snpgdsClose(genofile_GoMa)
+
+snpgdsCreateGeno("swiftia_snps_subset_GoMa.gds",
+                 genmat = geno_GoMa,
+                 sample.id = GoMa_samples,
+                 snp.id = snp.id_GoMa,
+                 snp.position = snp.position_GoMa,
+                 snp.chromosome = snp.chromosome_GoMa,
+                 snp.allele = snp.allele_GoMa,
+                 snpfirstdim = FALSE)
+
+genofile_GoMa <- snpgdsOpen("swiftia_snps_subset_GoMa.gds")
+
+set.seed(1000)
+snpset_pruned_GoMa <- snpgdsLDpruning(genofile_GoMa,
+                                    autosome.only = FALSE,
+                                    ld.threshold = 0.1,
+                                    slide.max.bp = 500000,
+                                    maf = 0.05,
+                                    missing.rate = 0.1,
+                                    num.thread = 8)
+
+snpset.id.GoMa <- unlist(snpset_pruned_GoMa)
+
+L2_GoMa <- snpgdsLDMat(genofile_GoMa,
+                      snp.id = snpset.id.GoMa,
+                      method = "composite",
+                      slide = 20,
+                      num.thread = 8)
+
+while (!is.null(dev.list())) dev.off()
+
+pdf('./LD_heatmap_pruned_GoMa.pdf', width = 7, height = 7, compress = TRUE)
+colors <- colorRampPalette(c("white", "lightyellow", "orange", "red", "darkred"))(100)
+image(abs(L2_GoMa$LD),
+      col = colors,
+      main = "LD Heatmap After Pruning\n(All Gulf of Mexico Populations)",
+      xlab = "SNP Position",
+      ylab = "SNP Position")
+
+legend_breaks <- seq(0, 1, by = 0.2)
+legend("right",
+       legend = legend_breaks,
+       fill = colors[seq(1, length(colors), length.out = length(legend_breaks))],
+       title = "R\u00b2",
+       cex = 0.8)
+dev.off()
+
+ld_values_GoMa <- abs(L2_GoMa$LD[upper.tri(L2_GoMa$LD)])
+
+# Summary of LD values after pruning:
+print(summary(ld_values_GoMa))
+# Number of SNPs before pruning:
+print(length(read.gdsn(index.gdsn(genofile_GoMa, "snp.id"))))
+# 23869
+# Number of SNPs after pruning:
+print(length(snpset.id.GoMa))
+# Proportion of SNPs retained:
+print(length(snpset.id.GoMa) / length(read.gdsn(index.gdsn(genofile_GoMa, "snp.id"))))
+
+pca_GoMa <- snpgdsPCA(genofile_GoMa,
+                     snp.id = snpset.id.GoMa,
+                     autosome.only = FALSE,
+                     num.thread = 8)
+
+pc.percent_GoMa <- pca_GoMa$varprop * 100
+# Variance explained by first 10 PCs:
+print(round(pc.percent_GoMa[1:10], 2))
+
+tab_pca_GoMa <- data.frame(
+    sample.id = pca_GoMa$sample.id,
+    pop = pop_code_GoMa[pca_GoMa$sample.id, "STRATA"],
+    PC1 = pca_GoMa$eigenvect[, 1],
+    PC2 = pca_GoMa$eigenvect[, 2],
+    PC3 = pca_GoMa$eigenvect[, 3],
+    stringsAsFactors = FALSE
+)
+
+pdf("./PCA_pruned_SNPs_GoMa.pdf", width = 8, height = 7)
+
+pca_goma_1_2 <- ggplot(tab_pca_GoMa, aes(x = PC1, y = PC2, color = pop)) +
+    geom_point(size = 3, alpha = 0.8) +
+    scale_color_manual(values = c13_sites[WE_order_GoMa],
+                      breaks = WE_order_GoMa,
+                      guide = guide_legend(title = "Site")) +
+    theme_bw() +
+    xlab(paste0("PC1 (", round(pc.percent_GoMa[1], 2), "%)")) +
+    ylab(paste0("PC2 (", round(pc.percent_GoMa[2], 2), "%)")) +
+    ggtitle("PCA of LD-pruned SNPs\n(All Gulf of Mexico Populations)") +
+    theme(legend.title = element_blank(),
+          legend.position = "right",
+          plot.title = element_text(hjust = 0.5),
+          panel.grid.major = element_line(color = "gray90"),
+          panel.grid.minor = element_line(color = "gray95"))
+
+print(pca_goma_1_2)
+dev.off()
+
+saveRDS(list(pca = pca_GoMa,
+             variance = pc.percent_GoMa,
+             data = tab_pca_GoMa,
+             pruned_snps = snpset.id.GoMa),
+        "./pca_results_pruned_GoMa.rds")
+
+snpgdsClose(genofile_GoMa)
+```
+
+
+#LD 0.1 stringent threshold for GoM pops > 10 _GoM10
+```{r LD 0.1 GoM10}
+# vcf_full already loaded above (ld-load-vcf chunk)
+gom10_samples <- rownames(pop_code_GoM10)
+vcf_gom10 <- vcf_full[, c(1, which(colnames(vcf_full@gt)[-1] %in% gom10_samples) + 1)]
+vcf.fn_GoM10 <- "swiftia_snps_GoM10.vcf"
+write.vcf(vcf_gom10, file = vcf.fn_GoM10)
+snpgdsVCF2GDS(vcf.fn_GoM10, "swiftia_snps_GoM10.gds", method = "biallelic.only")
+
+genofile_GoM10 <- snpgdsOpen("swiftia_snps_GoM10.gds")
+geno_GoM10 <- snpgdsGetGeno(genofile_GoM10, sample.id = gom10_samples)
+# Genotype matrix: 158 samples X 23869 SNPs
+
+snp.id_GoM10 <- read.gdsn(index.gdsn(genofile_GoM10, "snp.id"))
+snp.position_GoM10 <- read.gdsn(index.gdsn(genofile_GoM10, "snp.position"))
+snp.chromosome_GoM10 <- read.gdsn(index.gdsn(genofile_GoM10, "snp.chromosome"))
+snp.allele_GoM10 <- read.gdsn(index.gdsn(genofile_GoM10, "snp.allele"))
+
+snpgdsClose(genofile_GoM10)
+
+snpgdsCreateGeno("swiftia_snps_subset_GoM10.gds",
+                 genmat = geno_GoM10,
+                 sample.id = gom10_samples,
+                 snp.id = snp.id_GoM10,
+                 snp.position = snp.position_GoM10,
+                 snp.chromosome = snp.chromosome_GoM10,
+                 snp.allele = snp.allele_GoM10,
+                 snpfirstdim = FALSE)
+
+genofile_GoM10 <- snpgdsOpen("swiftia_snps_subset_GoM10.gds")
+
+set.seed(1000)
+snpset_pruned_GoM10 <- snpgdsLDpruning(genofile_GoM10,
+                                    autosome.only = FALSE,
+                                    ld.threshold = 0.1,
+                                    slide.max.bp = 500000,
+                                    maf = 0.05,
+                                    missing.rate = 0.1,
+                                    num.thread = 8)
+
+snpset.id.GoM10 <- unlist(snpset_pruned_GoM10)
+
+L2_GoM10 <- snpgdsLDMat(genofile_GoM10,
+                      snp.id = snpset.id.GoM10,
+                      method = "composite",
+                      slide = 20,
+                      num.thread = 8)
+
+while (!is.null(dev.list())) dev.off()
+
+pdf('./LD_heatmap_pruned_GoM10.pdf', width = 7, height = 7, compress = TRUE)
+colors <- colorRampPalette(c("white", "lightyellow", "orange", "red", "darkred"))(100)
+image(abs(L2_GoM10$LD),
+      col = colors,
+      main = "LD Heatmap After Pruning\n(Gulf of Mexico Populations > 10 indv.)",
+      xlab = "SNP Position",
+      ylab = "SNP Position")
+
+legend_breaks <- seq(0, 1, by = 0.2)
+legend("right",
+       legend = legend_breaks,
+       fill = colors[seq(1, length(colors), length.out = length(legend_breaks))],
+       title = "R\u00b2",
+       cex = 0.8)
+dev.off()
+
+ld_values_GoM10 <- abs(L2_GoM10$LD[upper.tri(L2_GoM10$LD)])
+
+# Summary of LD values after pruning:
+print(summary(ld_values_GoM10))
+# Number of SNPs before pruning:
+print(length(read.gdsn(index.gdsn(genofile_GoM10, "snp.id"))))
+# Number of SNPs after pruning:
+print(length(snpset.id.GoM10))
+# Proportion of SNPs retained:
+print(length(snpset.id.GoM10) / length(read.gdsn(index.gdsn(genofile_GoM10, "snp.id"))))
+
+pca_GoM10 <- snpgdsPCA(genofile_GoM10,
+                     snp.id = snpset.id.GoM10,
+                     autosome.only = FALSE,
+                     num.thread = 8)
+
+pc.percent_GoM10 <- pca_GoM10$varprop * 100
+# Variance explained by first 10 PCs:
+print(round(pc.percent_GoM10[1:10], 2))
+
+tab_pca_GoM10 <- data.frame(
+    sample.id = pca_GoM10$sample.id,
+    pop = pop_code_GoM10[pca_GoM10$sample.id, "STRATA"],
+    PC1 = pca_GoM10$eigenvect[, 1],
+    PC2 = pca_GoM10$eigenvect[, 2],
+    PC3 = pca_GoM10$eigenvect[, 3],
+    stringsAsFactors = FALSE
+)
+
+pdf("./PCA_pruned_SNPs_GoM10.pdf", width = 8, height = 7)
+
+pca_GoM10_1_2 <- ggplot(tab_pca_GoM10, aes(x = PC1, y = PC2, color = pop)) +
+    geom_point(size = 3, alpha = 0.8) +
+    scale_color_manual(values = c13_sites[WE_order_GoM10],
+                      breaks = WE_order_GoM10,
+                      guide = guide_legend(title = "Site")) +
+    theme_bw() +
+    xlab(paste0("PC1 (", round(pc.percent_GoM10[1], 2), "%)")) +
+    ylab(paste0("PC2 (", round(pc.percent_GoM10[2], 2), "%)")) +
+    ggtitle("PCA of LD-pruned SNPs\n(Gulf of Mexico Populations > 10 indv.)") +
+    theme(legend.title = element_blank(),
+          legend.position = "right",
+          plot.title = element_text(hjust = 0.5),
+          panel.grid.major = element_line(color = "gray90"),
+          panel.grid.minor = element_line(color = "gray95"))
+
+print(pca_GoM10_1_2)
+dev.off()
+
+saveRDS(list(pca = pca_GoM10,
+             variance = pc.percent_GoM10,
+             data = tab_pca_GoM10,
+             pruned_snps = snpset.id.GoM10),
+        "./pca_results_pruned_GoM10.rds")
+
+snpgdsClose(genofile_GoM10)
+```
+
+# Create GDS file for clones
+```{r GDS file and LD pruning for clones}
+library(SNPRelate)
+library(gdsfmt)
+
+# Assuming snps_clones is a genlight object for the clones-only dataset
+subset_samples_clones <- indNames(snps_clones)
+
+# vcf.fn_full already defined above (ld-load-vcf chunk) - same source VCF, different sample subset
+snpgdsVCF2GDS(vcf.fn_full,
+              "swiftia_snps_clones_temp.gds",
+              method = "biallelic.only")
+
+genofile_temp <- snpgdsOpen("swiftia_snps_clones_temp.gds")
+geno_clones <- snpgdsGetGeno(genofile_temp, sample.id = subset_samples_clones)
+# Genotype matrix: 126 samples X 23869 SNPs
+
+snp.id_clones <- read.gdsn(index.gdsn(genofile_temp, "snp.id"))
+snp.position_clones <- read.gdsn(index.gdsn(genofile_temp, "snp.position"))
+snp.chromosome_clones <- read.gdsn(index.gdsn(genofile_temp, "snp.chromosome"))
+snp.allele_clones <- read.gdsn(index.gdsn(genofile_temp, "snp.allele"))
+
+snpgdsClose(genofile_temp)
+
+snpgdsCreateGeno("swiftia_snps_clones.gds",
+                 genmat = geno_clones,
+                 sample.id = subset_samples_clones,
+                 snp.id = snp.id_clones,
+                 snp.position = snp.position_clones,
+                 snp.chromosome = snp.chromosome_clones,
+                 snp.allele = snp.allele_clones,
+                 snpfirstdim = FALSE)
+
+genofile_clones <- snpgdsOpen("swiftia_snps_clones.gds")
+cat("Number of samples in clones GDS:", length(read.gdsn(index.gdsn(genofile_clones, "sample.id"))), "\n")
+# Number of samples in clones GDS: 126
+cat("Number of SNPs in clones GDS:", length(read.gdsn(index.gdsn(genofile_clones, "snp.id"))), "\n")
+# Number of SNPs in clones GDS: 23869
+snpgdsClose(genofile_clones)
+
+file.remove("swiftia_snps_clones_temp.gds")
+
+# LD-based SNP pruning for the clones dataset (used for IBD analysis, not population
+# structure - hence the more lenient 0.2 threshold and no sliding window here)
+genofile_clones <- snpgdsOpen("swiftia_snps_clones.gds")
+set.seed(1000)
+snpset_pruned_clones <- snpgdsLDpruning(genofile_clones,
+                                       ld.threshold = 0.2,
+                                       autosome.only = FALSE)
+snpset.id.clones <- unlist(snpset_pruned_clones)
+cat("Number of pruned SNPs for clones:", length(snpset.id.clones), "\n")
+# Number of pruned SNPs for clones: 3462
+
+saveRDS(snpset.id.clones, "snpset.id.clones.rds")
+snpgdsClose(genofile_clones)
+
+# snpset.id.clones <- readRDS("snpset.id.clones.rds")
+```
+
+# Save all LD Output in Rdata file
+GDS objects were saved separately during each chunk
+```{r export LD Rdata}
+# Save all analysis outputs into a single .Rdata file
+save(
+  # Previously included objects
+  snpset_pruned_all, snpset.id.all,
+  snpset_pruned_sub, snpset.id.sub,
+  snpset_pruned_GoMa, snpset.id.GoMa,
+  snpset_pruned_GoM10, snpset.id.GoM10,
+  
+  # LD Matricies
+  L2_all, L2_sub, L2_GoMa, L2_GoM10,
+  
+  # LD Values
+  ld_values, ld_values_sub, ld_values_GoMa, ld_values_GoM10,
+  
+  # PCA results
+  pca_pruned, pc.percent, tab_pca,
+  pca_sub, pc.percent_sub, tab_pca_sub,
+  pca_GoMa, pc.percent_GoMa, tab_pca_GoMa,
+  pca_GoM10, pc.percent_GoM10, tab_pca_GoM10,
+  
+  # Clone-related objects
+  subset_samples_clones,
+  geno_clones, 
+  snp.id_clones, 
+  snp.position_clones, 
+  snp.chromosome_clones, 
+  snp.allele_clones,
+  snpset_pruned_clones, 
+  snpset.id.clones,
+  
+  file = "swiftia_LD_PCA_results.Rdata"
+)
+```
+
+==================================================
+---------------------- AMOVAs --------------------
+==================================================
+
+"AMOVA Analysis – GoM10 and Sub Datasets
+This section runs Analysis of Molecular Variance (AMOVA) on the **GoM10** and **Sub**
+datasets using `poppr::poppr.amova()` with the Ade4 engine.
+
+- **GoM10** (158 ind, 9 pops, GoM only): single-level AMOVA — among populations vs. within populations  
+- **Sub** (174 ind, 10 pops, GoM + Edisto): 
+  - Single-level AMOVA — among populations vs. within populations  
+  - Two-level hierarchical AMOVA — among regions (GoM vs. Atlantic), among populations within regions, within populations  
+
+All results are exported as CSV files.
+
+# 1. Load Libraries and Data
+
+```{r load-libs}
+library(adegenet)
+library(poppr)
+library(ade4)
+library(pegas)
+library(dplyr)
+library(tidyr)
+```
+
+```{r load data}
+# GoM10 genind (neutral, clone-corrected)
+if (!exists("snps_mlg_GoM10"))  load("snps_mlg_GoM10.Rdata")
+
+# Sub genind (snps_mlg_sub_n)
+# TODO: save this to its own snps_mlg_sub_n.Rdata (matching the GoM10 file above)
+# rather than loading a dated whole-environment snapshot - avoids depending on
+# unrelated/stale objects also present in that snapshot.
+if (!exists("snps_mlg_sub_n"))  load("Renv_popgen_03262026.RData")
+
+# Pop code tables (individual saves)
+if (!exists("pop_code_GoM10"))  load("pop_code_GoM10.Rdata")
+if (!exists("pop_code_sub"))    load("pop_code_sub.Rdata")
+
+stopifnot(exists("snps_mlg_GoM10"), exists("snps_mlg_sub_n"))
+
+cat("GoM10 genind:\n"); print(snps_mlg_GoM10)
+cat("\nSub genind:\n");  print(snps_mlg_sub_n)
+```
+
+---
+
+# 2. Helper function – tidy AMOVA table
+
+```{r helper fn}
+#' Coerce an ade4/poppr AMOVA result to a tidy data frame
+tidy_amova <- function(amova_obj, label = "") {
+  tab    <- amova_obj$tab
+  sigma2 <- amova_obj$componentsofcovariance
+  phi    <- amova_obj$statphi
+
+  df_tab <- data.frame(
+    Source = rownames(tab),
+    df     = tab[, "Df"],
+    SS     = tab[, "Sum Sq"],
+    MS     = tab[, "Mean Sq"],
+    stringsAsFactors = FALSE
+  )
+
+  df_vc <- data.frame(
+    Source        = rownames(sigma2),
+    Variance      = sigma2[, "Sigma"],
+    Percent_Total = sigma2[, "%"],
+    stringsAsFactors = FALSE
+  )
+
+  df_phi <- data.frame(
+    Statistic = rownames(phi),
+    Phi       = phi[, "Phi"],
+    stringsAsFactors = FALSE
+  )
+
+  list(
+    label          = label,
+    anova_table    = df_tab,
+    var_components = df_vc,
+    phi_stats      = df_phi
+  )
+}
+```
+
+---
+
+# 3. GoM10 — Single-level AMOVA
+
+Population structure among the 9 GoM populations (no regional grouping).
+Set explicitly for both datasets here (rather than relying on `hier =` implicitly
+matching whatever strata a genind object happens to already carry), so both the
+single-level and hierarchical AMOVAs below are self-contained and reproducible
+regardless of how the objects were loaded above.
+```{r amova gom10}
+# GoM10: single level, just population
+strata(snps_mlg_GoM10) <- data.frame(Pop = pop(snps_mlg_GoM10))
+
+# Sub: population, plus Region (Edisto = Atlantic, everything else = GoM)
+region_map <- c(
+  EFGB      = "GoM", Elvers    = "GoM", McGrail  = "GoM",
+  Bouma     = "GoM", Alderdice = "GoM", Diaphus  = "GoM",
+  FTR       = "GoM", AAR       = "GoM", RTR      = "GoM",
+  Edisto    = "Atlantic"
+)
+
+strata_df_sub <- data.frame(
+  Pop    = as.character(pop(snps_mlg_sub_n)),
+  Region = region_map[as.character(pop(snps_mlg_sub_n))],
+  stringsAsFactors = FALSE
+)
+strata(snps_mlg_sub_n) <- strata_df_sub
+```
+
+---
+
+# 4. GoM10 - Single-level AMOVA
+
+Population structure among the 9 GoM populations (no regional grouping).
+
+```{r amova-gom10}
+WE_order_GoM10 <- c("EFGB", "Elvers", "McGrail", "Bouma", "Alderdice",
+                    "Diaphus", "FTR", "AAR", "RTR")
+pop(snps_mlg_GoM10) <- factor(pop(snps_mlg_GoM10), levels = WE_order_GoM10)
+
+dist_GoM10 <- dist(tab(snps_mlg_GoM10, freq = TRUE, NA.method = "mean"))
+
+set.seed(42)
+amova_GoM10 <- poppr.amova(snps_mlg_GoM10,
+                            hier         = ~ Pop,
+                            dist         = dist_GoM10,
+                            squared      = FALSE,
+                            within       = TRUE,
+                            clonecorrect = FALSE,
+                            method       = "ade4")
+
+print(amova_GoM10)
+```
+
+```{r amova-gom10-signif}
+set.seed(42)
+amova_GoM10_sig <- randtest(amova_GoM10, nrepet = 9999)
+print(amova_GoM10_sig)
+```
+
+---
+
+# 5. Sub - Single-level AMOVA
+
+Population structure among all 10 populations (GoM + Edisto).
+
+```{r amova-sub-1level}
+WE_order_sub <- c("EFGB", "Elvers", "McGrail", "Bouma", "Alderdice",
+                  "Diaphus", "FTR", "AAR", "RTR", "Edisto")
+pop(snps_mlg_sub_n) <- factor(pop(snps_mlg_sub_n), levels = WE_order_sub)
+
+dist_sub <- dist(tab(snps_mlg_sub_n, freq = TRUE, NA.method = "mean"))
+
+set.seed(42)
+amova_sub_1L <- poppr.amova(snps_mlg_sub_n,
+                             hier         = ~ Pop,
+                             dist         = dist_sub,
+                             squared      = FALSE,
+                             within       = TRUE,
+                             clonecorrect = FALSE,
+                             method       = "ade4")
+
+print(amova_sub_1L)
+```
+
+```{r amova-sub-1level-signif}
+set.seed(42)
+amova_sub_1L_sig <- randtest(amova_sub_1L, nrepet = 9999)
+print(amova_sub_1L_sig)
+```
+
+---
+
+# 6. Sub - Two-level Hierarchical AMOVA (Region / Population / Individual)
+
+Grouping: **Edisto = Atlantic**, all others = **GoM** (strata set in Section 3).
+
+```{r amova sub hier}
+set.seed(42)
+amova_sub_hier <- poppr.amova(snps_mlg_sub_n,
+                               hier         = ~ Region / Pop,
+                               dist         = dist_sub,
+                               squared      = FALSE,
+                               within       = TRUE,
+                               clonecorrect = FALSE,
+                               method       = "ade4")
+
+print(amova_sub_hier)
+```
+
+```{r amova sub hier signif}
+set.seed(42)
+amova_sub_hier_sig <- randtest(amova_sub_hier, nrepet = 9999)
+print(amova_sub_hier_sig)
+```
+
+---
+
+# 7. Extract p-values from significance tests
+
+```{r pval helper}
+# Pull observed statistic and p-value from a randtest/krandtest object
+extract_pvals <- function(sig_obj) {
+  if (inherits(sig_obj, "krandtest")) {
+    data.frame(
+      Test     = sig_obj$names,
+      Observed = sig_obj$obs,
+      p_value  = sig_obj$pvalue,
+      stringsAsFactors = FALSE
+    )
+  } else {
+    data.frame(
+      Test     = "AMOVA",
+      Observed = sig_obj$obs,
+      p_value  = sig_obj$pvalue,
+      stringsAsFactors = FALSE
+    )
+  }
+}
+
+pvals_GoM10    <- extract_pvals(amova_GoM10_sig)
+pvals_sub_1L   <- extract_pvals(amova_sub_1L_sig)
+pvals_sub_hier <- extract_pvals(amova_sub_hier_sig)
+```
+
+---
+
+# 8. Assemble & Export Results to CSV
+
+```{r export csv}
+output_dir <- "AMOVA_Output"
+dir.create(output_dir, showWarnings = FALSE)
+
+# Match p-values to variance-component rows BY NAME. 
+# AMOVA variance-component tables and Phi-statistic tables don't
+# necessarily have the same number of rows (e.g. the hierarchical case has an
+# extra "within individual" variance row with no corresponding Phi statistic),
+# so this prints both label sets and only fills in a p-value where a name match
+# is unambiguous - anything else is left NA and flagged for manual assignment.
+add_pvals <- function(vc_df, pval_df, label = "") {
+  cat("\n---", label, "---\n")
+  cat("Variance component rows:", paste(vc_df$Source, collapse = " | "), "\n")
+  cat("Phi-statistic rows:     ", paste(pval_df$Test, collapse = " | "), "\n")
+
+  vc_df$p_value <- NA_real_
+  for (i in seq_len(nrow(vc_df))) {
+    hit <- which(vapply(pval_df$Test, function(t) {
+      grepl(t, vc_df$Source[i], fixed = TRUE) || grepl(vc_df$Source[i], t, fixed = TRUE)
+    }, logical(1)))
+    if (length(hit) == 1) {
+      vc_df$p_value[i] <- pval_df$p_value[hit]
+    }
+  }
+
+  if (any(is.na(vc_df$p_value))) {
+    warning(label, ": could not confidently match a p-value to every variance ",
+            "component row by name - check the printed label lists above and ",
+            "assign the remaining row(s) manually before trusting this table.")
+  }
+  vc_df
+}
+
+res_GoM10    <- tidy_amova(amova_GoM10,    "GoM10_1level")
+res_sub_1L   <- tidy_amova(amova_sub_1L,   "Sub_1level")
+res_sub_hier <- tidy_amova(amova_sub_hier, "Sub_hierarchical")
+
+res_GoM10$var_components    <- add_pvals(res_GoM10$var_components,    pvals_GoM10,    "GoM10_1level")
+res_sub_1L$var_components   <- add_pvals(res_sub_1L$var_components,   pvals_sub_1L,   "Sub_1level")
+res_sub_hier$var_components <- add_pvals(res_sub_hier$var_components, pvals_sub_hier, "Sub_hierarchical")
+
+# 8a. Per-analysis CSV files
+write_amova_csv <- function(res, tag) {
+  write.csv(res$anova_table,    file.path(output_dir, paste0("AMOVA_", tag, "_ANOVA_table.csv")),        row.names = FALSE)
+  write.csv(res$var_components, file.path(output_dir, paste0("AMOVA_", tag, "_variance_components.csv")), row.names = FALSE)
+  write.csv(res$phi_stats,      file.path(output_dir, paste0("AMOVA_", tag, "_phi_statistics.csv")),      row.names = FALSE)
+  cat("Exported:", tag, "\n")
+}
+
+write_amova_csv(res_GoM10,    "GoM10_1level")
+write_amova_csv(res_sub_1L,   "Sub_1level")
+write_amova_csv(res_sub_hier, "Sub_hierarchical")
+
+# 8b. Combined summary CSVs
+all_vc  <- bind_rows(lapply(list(res_GoM10, res_sub_1L, res_sub_hier),
+                             function(r) { r$var_components$Dataset <- r$label; r$var_components }))
+all_phi <- bind_rows(lapply(list(res_GoM10, res_sub_1L, res_sub_hier),
+                             function(r) { r$phi_stats$Dataset <- r$label; r$phi_stats }))
+
+write.csv(all_vc,  file.path(output_dir, "AMOVA_all_variance_components_summary.csv"), row.names = FALSE)
+write.csv(all_phi, file.path(output_dir, "AMOVA_all_phi_statistics_summary.csv"),       row.names = FALSE)
+
+cat("\nAll AMOVA CSV exports complete.\n")
+cat("Output directory:", output_dir, "\n")
+```
+
+---
+
+# 9. Quick Summary Print
+
+```{r print summary}
+cat("\n============================================================\n")
+cat(" GoM10 - Single-level AMOVA\n")
+cat("============================================================\n")
+print(res_GoM10$var_components)
+print(res_GoM10$phi_stats)
+
+cat("\n============================================================\n")
+cat(" Sub - Single-level AMOVA\n")
+cat("============================================================\n")
+print(res_sub_1L$var_components)
+print(res_sub_1L$phi_stats)
+
+cat("\n============================================================\n")
+cat(" Sub - Hierarchical AMOVA (Region / Pop / Individual)\n")
+cat("============================================================\n")
+print(res_sub_hier$var_components)
+print(res_sub_hier$phi_stats)
+```
+
+
+================================================================
+------------ Isolation by Distance (Mantel Tests) -------------
+================================================================
+This section tests for isolation-by-distance (IBD) in by performing Mantel tests 
+regressing pairwise linearized genetic differentiation [FST/(1-FST)] against the natural log of 
+pairwise geographic (great-circle) distance. 
+
+Analyses are run for two datasets:
+
+- **GoM10**: Gulf of Mexico populations with ≥10 individuals (9 pops, 158 ind)
+- **Sub**: GoM populations ≥10 individuals + Edisto (Atlantic) (10 pops, 174 ind)
+
+The Sub dataset Mantel test is interpreted with caution because the Atlantic–Gulf divergence 
+likely inflates the IBD signal; the GoM10 test is the primary inference.
+
+---
+
+# 1. Load Packages and Data
+```{r load packages}
+library(vegan)       # mantel()
+library(geosphere)   # distm(), distHaversine()
+library(ggplot2)
+library(dplyr)
+library(patchwork)   # combined panel figure (Section 7c)
+```
+
+```{r load data}
+# Load pre-existing R objects from main pipeline (metadata, pop_codes, genind objects)
+# Adjust path to your working directory as needed
+load("nonclone_subsetted_data.Rdata")
+
+# FST matrices were generated in the FST analysis script via snpgdsFst (W&C84).
+# Reuse them if already in the environment (running right after that script in the
+# same session); otherwise read back the CSVs it exports, so this script can also
+# run standalone.
+if (!exists("fst_matrix_GoM10")) {
+  fst_matrix_GoM10 <- as.matrix(read.csv("FST_matrix_GoM10.csv", row.names = 1, check.names = FALSE))
+}
+if (!exists("fst_matrix_sub")) {
+  fst_matrix_sub <- as.matrix(read.csv("FST_matrix_sub.csv", row.names = 1, check.names = FALSE))
+}
+stopifnot(exists("fst_matrix_GoM10"), exists("fst_matrix_sub"))
+
+# West-to-east population orders
+WE_order_GoM10 <- c("EFGB", "Elvers", "McGrail", "Bouma", "Alderdice",
+                     "Diaphus", "FTR", "AAR", "RTR")
+
+WE_order_sub    <- c("EFGB", "Elvers", "McGrail", "Bouma", "Alderdice",
+                     "Diaphus", "FTR", "AAR", "RTR", "Edisto")
+```
+
+---
+
+# 2. Build Population-Level Coordinate Tables
+Geographic distances are calculated using mean site coordinates derived from individual-level 
+metadata (LAT, LONG columns). This averages over the spatial spread of sampling within a site.
+```{r site coords}
+# --- GoM10 site coordinates ---
+site_coords_GoM10 <- se_metadata_neutral_GoM10 %>%
+  group_by(SITE) %>%
+  summarise(
+    LAT  = mean(LAT,  na.rm = TRUE),
+    LONG = mean(LONG, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(SITE %in% WE_order_GoM10) %>%
+  arrange(match(SITE, WE_order_GoM10))
+
+print(site_coords_GoM10)
+
+# --- Sub site coordinates ---
+site_coords_sub <- se_metadata_neutral_sub %>%
+  group_by(SITE) %>%
+  summarise(
+    LAT  = mean(LAT,  na.rm = TRUE),
+    LONG = mean(LONG, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(SITE %in% WE_order_sub) %>%
+  arrange(match(SITE, WE_order_sub))
+
+print(site_coords_sub)
+```
+
+---
+
+# 3. Compute Pairwise Geographic Distance Matrices
+Great-circle distances (km) are calculated using the Haversine formula via `geosphere::distm()`.
+```{r geo-dist}
+# --- GoM10 ---
+coords_mat_GoM10 <- as.matrix(site_coords_GoM10[, c("LONG", "LAT")])
+rownames(coords_mat_GoM10) <- site_coords_GoM10$SITE
+
+geo_dist_GoM10 <- distm(coords_mat_GoM10, fun = distHaversine) / 1000  # convert m to km
+rownames(geo_dist_GoM10) <- colnames(geo_dist_GoM10) <- site_coords_GoM10$SITE
+
+# --- Sub ---
+coords_mat_sub <- as.matrix(site_coords_sub[, c("LONG", "LAT")])
+rownames(coords_mat_sub) <- site_coords_sub$SITE
+
+geo_dist_sub <- distm(coords_mat_sub, fun = distHaversine) / 1000
+rownames(geo_dist_sub) <- colnames(geo_dist_sub) <- site_coords_sub$SITE
+
+# Preview
+round(geo_dist_GoM10, 1)
+```
+
+---
+
+# 4. Align and Linearize FST Matrices
+FST values are linearized as FST/(1-FST) following Rousset (1997), the standard transformation 
+for testing IBD in stepping-stone models. Geographic distances are log-transformed [ln(km)].
+```{r linearize}
+# Helper: align FST matrix to a given population order, set diagonal to 0
+prepare_fst <- function(fst_mat, pop_order) {
+  # Ensure symmetric
+  fst_mat <- (fst_mat + t(fst_mat)) / 2
+  # Reorder rows and columns
+  fst_mat <- fst_mat[pop_order, pop_order]
+  # Force any negative values (rounding artifacts) to 0
+  fst_mat[fst_mat < 0] <- 0
+  diag(fst_mat) <- 0
+  return(fst_mat)
+}
+
+# --- GoM10 ---
+fst_GoM10_aligned <- prepare_fst(fst_matrix_GoM10, WE_order_GoM10)
+lin_fst_GoM10 <- fst_GoM10_aligned / (1 - fst_GoM10_aligned)
+diag(lin_fst_GoM10) <- 0
+
+# --- Sub ---
+fst_sub_aligned <- prepare_fst(fst_matrix_sub, WE_order_sub)
+lin_fst_sub <- fst_sub_aligned / (1 - fst_sub_aligned)
+diag(lin_fst_sub) <- 0
+
+# Align geo distance matrices to same order
+geo_GoM10_aligned <- geo_dist_GoM10[WE_order_GoM10, WE_order_GoM10]
+geo_sub_aligned   <- geo_dist_sub[WE_order_sub, WE_order_sub]
+
+# Log-transform geographic distances (diagonal, log(0) = -Inf, is zeroed right after)
+ln_geo_GoM10 <- log(geo_GoM10_aligned)
+diag(ln_geo_GoM10) <- 0
+
+ln_geo_sub <- log(geo_sub_aligned)
+diag(ln_geo_sub) <- 0
+
+# Quick check - print a few values
+cat("Linearized FST range (GoM10):", range(lin_fst_GoM10[lower.tri(lin_fst_GoM10)]), "\n")
+cat("ln(geo distance) range (GoM10):", range(ln_geo_GoM10[lower.tri(ln_geo_GoM10)]), "ln(km)\n")
+```
+
+---
+
+# 5. Mantel Tests
+Mantel tests use 9,999 permutations. The test statistic is Pearson's r between the lower
+triangles of the two distance matrices. Each test is seeded independently so results are
+reproducible regardless of which order the chunks are run in.
+```{r mantel tests}
+# --- GoM10: primary IBD test ---
+set.seed(42)
+mantel_GoM10 <- mantel(
+  xdis  = as.dist(lin_fst_GoM10),
+  ydis  = as.dist(ln_geo_GoM10),
+  method = "pearson",
+  permutations = 9999,
+  na.rm = TRUE
+)
+
+cat("=== GoM10 Mantel Test (FST/(1-FST) ~ ln[geographic distance]) ===\n")
+print(mantel_GoM10)
+
+# --- Sub: secondary test (includes Atlantic) ---
+set.seed(42)
+mantel_sub <- mantel(
+  xdis  = as.dist(lin_fst_sub),
+  ydis  = as.dist(ln_geo_sub),
+  method = "pearson",
+  permutations = 9999,
+  na.rm = TRUE
+)
+
+cat("\n=== Sub Mantel Test (FST/(1-FST) ~ ln[geographic distance]) ===\n")
+print(mantel_sub)
+```
+
+---
+
+# 6. Summarize Results
+```{r results table}
+mantel_summary <- data.frame(
+  Dataset      = c("GoM10 (Gulf only, n >= 10)",
+                   "Sub (GoM + Edisto, n >= 10)"),
+  N_pops       = c(length(WE_order_GoM10), length(WE_order_sub)),
+  Mantel_r     = round(c(mantel_GoM10$statistic, mantel_sub$statistic), 4),
+  P_value      = c(mantel_GoM10$signif, mantel_sub$signif),
+  Permutations = c(9999, 9999)
+)
+
+print(mantel_summary)
+
+write.csv(mantel_summary, "mantel_results_summary.csv", row.names = FALSE)
+```
+
+---
+
+# 7. Visualization
+
+## 7a. GoM10 IBD Plot
+```{r plot-GoM10, fig.width=6, fig.height=5}
+# Extract lower triangle values for plotting
+get_lower_tri_df <- function(fst_mat, geo_mat, pop_order) {
+  idx <- which(lower.tri(fst_mat), arr.ind = TRUE)
+  data.frame(
+    pop1    = pop_order[idx[, 1]],
+    pop2    = pop_order[idx[, 2]],
+    lin_fst = fst_mat[idx],
+    ln_geo  = geo_mat[idx]
+  )
+}
+
+ibd_df_GoM10 <- get_lower_tri_df(lin_fst_GoM10, ln_geo_GoM10, WE_order_GoM10)
+
+label_GoM10 <- paste0(
+  "Mantel r = ", round(mantel_GoM10$statistic, 3),
+  "\np = ",      round(mantel_GoM10$signif, 4)
+)
+
+p_GoM10 <- ggplot(ibd_df_GoM10, aes(x = ln_geo, y = lin_fst)) +
+  geom_point(size = 3, alpha = 0.75, color = "#3491A8") +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed", linewidth = 0.8) +
+  annotate("text",
+           x = min(ibd_df_GoM10$ln_geo) + 0.05 * diff(range(ibd_df_GoM10$ln_geo)),
+           y = max(ibd_df_GoM10$lin_fst) - 0.05 * diff(range(ibd_df_GoM10$lin_fst)),
+           label = label_GoM10, hjust = 0, vjust = 1, size = 4) +
+  labs(
+    title    = expression("Isolation by Distance" ~ "-" ~ "GoM10"),
+    subtitle = "Gulf of Mexico populations (n >= 10 individuals)",
+    x        = "ln(Geographic Distance [km])",
+    y        = expression(F[ST] / (1 - F[ST]))
+  ) +
+  theme_classic(base_size = 13) +
+  theme(plot.title = element_text(face = "italic", size = 13))
+
+print(p_GoM10)
+
+ggsave("IBD_mantel_GoM10.pdf", p_GoM10, width = 6, height = 5)
+ggsave("IBD_mantel_GoM10.png", p_GoM10, width = 6, height = 5, dpi = 300)
+```
+
+## 7b. Sub IBD Plot
+```{r plot-sub, fig.width=6, fig.height=5}
+ibd_df_sub <- get_lower_tri_df(lin_fst_sub, ln_geo_sub, WE_order_sub)
+
+# Flag Edisto pairs for visual reference
+ibd_df_sub$edisto_pair <- grepl("Edisto", ibd_df_sub$pop1) | grepl("Edisto", ibd_df_sub$pop2)
+
+label_sub <- paste0(
+  "Mantel r = ", round(mantel_sub$statistic, 3),
+  "\np = ", round(mantel_sub$signif, 4)
+)
+
+p_sub <- ggplot(ibd_df_sub, aes(x = ln_geo, y = lin_fst,
+                                 color = edisto_pair, shape = edisto_pair)) +
+  geom_point(size = 3, alpha = 0.80) +
+  geom_smooth(method = "lm", se = TRUE, color = "black", linetype = "dashed", linewidth = 0.8) +
+  scale_color_manual(values = c("FALSE" = "#3491A8", "TRUE" = "#C05050"),
+                     labels = c("GoM-GoM pairs", "Edisto pairs")) +
+  scale_shape_manual(values = c("FALSE" = 16, "TRUE" = 17),
+                     labels = c("GoM-GoM pairs", "Edisto pairs")) +
+  annotate("text",
+           x = min(ibd_df_sub$ln_geo) + 0.05 * diff(range(ibd_df_sub$ln_geo)),
+           y = max(ibd_df_sub$lin_fst) - 0.05 * diff(range(ibd_df_sub$lin_fst)),
+           label = label_sub, hjust = 0, vjust = 1, size = 4) +
+  labs(
+    title    = expression("Isolation by Distance" ~ "-" ~ "Sub"),
+    subtitle = "GoM + Edisto populations (n >= 10 individuals)",
+    x        = "ln(Geographic Distance [km])",
+    y        = expression(F[ST] / (1 - F[ST])),
+    color    = NULL, shape = NULL
+  ) +
+  theme_classic(base_size = 13) +
+  theme(
+    plot.title      = element_text(face = "italic", size = 13),
+    legend.position = "bottom"
+  )
+
+print(p_sub)
+
+ggsave("IBD_mantel_sub.pdf", p_sub, width = 6, height = 5)
+ggsave("IBD_mantel_sub.png", p_sub, width = 6, height = 5, dpi = 300)
+```
+
+## 7c. Combined Panel Figure
+```{r plot combined, fig.width=11, fig.height=5}
+p_combined <- (p_GoM10 + p_sub) +
+  plot_annotation(
+    title = expression(italic("Swiftia exserta") ~ "- Isolation by Distance"),
+    theme = theme(plot.title = element_text(size = 14, hjust = 0.5))
+  )
+
+print(p_combined)
+
+ggsave("IBD_mantel_combined.pdf", p_combined, width = 11, height = 5)
+ggsave("IBD_mantel_combined.png", p_combined, width = 11, height = 5, dpi = 300)
+```
+
+
+
+

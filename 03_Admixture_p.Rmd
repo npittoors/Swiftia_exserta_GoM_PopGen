@@ -1,0 +1,590 @@
+---
+title: "03_Admixture_p"
+author: "Nicole Pittoors"
+date: "2026-08-25"
+output: html_document
+---
+
+# Overview
+
+This script runs and processes ADMIXTURE on three LD-pruned datasets derived from
+the clone-corrected, BayeScan-filtered neutral SNP panel (16,746 loci; see
+`01_Data_Setup.Rmd`):
+
+| Dataset | Individuals | Populations | Pruned loci |
+|---|---|---|---|
+| GoM10 | 158 | 9 (Gulf sites with n >= 10) | 5,419 |
+| GoMa  | 176 | 12 (all Gulf sites) | 5,634 |
+| Sub   | 174 | 10 (GoM10 + Edisto) | 5,629 |
+
+LD pruning uses PLINK's SNP-count window (`--indep-pairwise 50 5 0.1`) rather than a
+physical-distance window, since RAD loci lack real linkage-map coordinates. ADMIXTURE
+is run K = 1-10, 10 replicates each (300 runs total per... across all three datasets),
+with CV error used to select the best-supported K. Across all three datasets, K=1 is
+best-supported (CV error increases monotonically through K=10) -- a genuine robustness
+result, since it shows the same pattern holds regardless of dataset scope. K=2/K=3
+panels are shown for interpretability, with cluster identity verified against
+per-population mean ancestry (see Section 5 below) before any lineage name or color
+is assigned.
+
+# 1. Setup
+
+```{r setup, message=FALSE}
+library(dartR)    # gi2gl(), gl2plink()
+library(dplyr)
+library(tidyr)    # gather()
+library(ggplot2)
+```
+
+```{r base-dir}
+# relative to this single directory.
+base_dir <- "path/to/admixture_pruned_data"
+setwd(base_dir)
+```
+
+## 1.1 Required input objects
+
+This script assumes the following objects already exist in the environment,
+produced by `02_popgen_pop_structure_p.Rmd`:
+
+- `snps_mlg_GoM10_n`, `snps_mlg_gom_all_n`, `snps_mlg_sub_n` -- clone-corrected,
+  BayeScan-filtered genind objects (158 / 176 / 174 individuals, 16,746 loci each)
+- `pop_data_GoM10`, `pop_data_GoMa`, `pop_data_sub` -- individual-to-population
+  data frames (columns: `individual`, `population`)
+- `se_metadata_neutral_GoM10`, `se_metadata_neutral_GoMa`, `se_metadata_neutral_sub`
+  -- metadata data frames including a `LONG` column, row-order matched to the
+  genind objects above
+- `WE_order_GoM10`, `WE_order_GoMa`, `WE_order_sub` -- west-to-east population
+  name vectors used to order structure-plot facets
+
+
+# 2. Export unpruned PLINK trios (local, before transfer to server)
+
+`stopifnot()` hard-stops the chunk if any individual/locus count is wrong.
+
+```{r admixture-export-unpruned}
+# GoM10: 158 ind, 16746 loci
+gl_GoM10 <- gi2gl(snps_mlg_GoM10_n)
+gl_GoM10$chromosome <- as.factor(rep("1", nLoc(gl_GoM10)))
+gl_GoM10$position <- as.integer(1:nLoc(gl_GoM10))
+stopifnot(nInd(gl_GoM10) == 158, nLoc(gl_GoM10) == 16746)
+gl2plink(gl_GoM10, outfile = "swiftia_GoM10", outpath = "./")
+
+# GoMa: 176 ind, 16746 loci
+gl_GoMa <- gi2gl(snps_mlg_gom_all_n)
+gl_GoMa$chromosome <- as.factor(rep("1", nLoc(gl_GoMa)))
+gl_GoMa$position <- as.integer(1:nLoc(gl_GoMa))
+stopifnot(nInd(gl_GoMa) == 176, nLoc(gl_GoMa) == 16746)
+gl2plink(gl_GoMa, outfile = "swiftia_GoMa", outpath = "./")
+
+# Sub: 174 ind, 16746 loci
+gl_sub <- gi2gl(snps_mlg_sub_n)
+gl_sub$chromosome <- as.factor(rep("1", nLoc(gl_sub)))
+gl_sub$position <- as.integer(1:nLoc(gl_sub))
+stopifnot(nInd(gl_sub) == 174, nLoc(gl_sub) == 16746)
+gl2plink(gl_sub, outfile = "swiftia_sub", outpath = "./")
+```
+
+Transfer the resulting `.ped`/`.map` files to the server and convert each to
+binary with `plink --make-bed`, into the following directory layout:
+`admixture_GoM10/plink_files/`, `admixture_results_GoMa/plink_files/`,
+`admixture_sub/plink_files/`.
+
+# 3. LD-prune all three datasets (server, PLINK)
+
+```{bash admixture-prune, eval=FALSE}
+# Run on server, mamba activate popgen
+
+cd /path/to/swiftia/admixture_GoM10/plink_files
+plink --bfile swiftia_GoM10 --allow-extra-chr --allow-no-sex \
+      --indep-pairwise 50 5 0.1 --out swiftia_GoM10_prunelist
+wc -l swiftia_GoM10_prunelist.prune.in   # expect 5419
+
+cd /path/to/swiftia/admixture_results_GoMa/plink_files
+plink --bfile swiftia_GoMa --allow-extra-chr --allow-no-sex \
+      --indep-pairwise 50 5 0.1 --out swiftia_GoMa_prunelist
+wc -l swiftia_GoMa_prunelist.prune.in    # expect 5634
+
+cd /path/to/swiftia/admixture_sub/plink_files
+plink --bfile swiftia_sub --allow-extra-chr --allow-no-sex \
+      --indep-pairwise 50 5 0.1 --out swiftia_sub_prunelist
+wc -l swiftia_sub_prunelist.prune.in     # expect 5629
+```
+
+# 4. Extract pruned loci into final ADMIXTURE-ready trios
+
+```{bash admixture-extract, eval=FALSE}
+cd /path/to/swiftia/admixture_GoM10/plink_files
+plink --bfile swiftia_GoM10 --allow-extra-chr --allow-no-sex \
+      --extract swiftia_GoM10_prunelist.prune.in \
+      --make-bed --out swiftia_GoM10_pruned
+wc -l swiftia_GoM10_pruned.fam swiftia_GoM10_pruned.bim   # expect 158 / 5419
+
+cd /path/to/swiftia/admixture_results_GoMa/plink_files
+plink --bfile swiftia_GoMa --allow-extra-chr --allow-no-sex \
+      --extract swiftia_GoMa_prunelist.prune.in \
+      --make-bed --out swiftia_GoMa_pruned
+wc -l swiftia_GoMa_pruned.fam swiftia_GoMa_pruned.bim     # expect 176 / 5634
+
+cd /path/to/swiftia/admixture_sub/plink_files
+plink --bfile swiftia_sub --allow-extra-chr --allow-no-sex \
+      --extract swiftia_sub_prunelist.prune.in \
+      --make-bed --out swiftia_sub_pruned
+wc -l swiftia_sub_pruned.fam swiftia_sub_pruned.bim       # expect 174 / 5629
+```
+
+
+# 5. Run ADMIXTURE (server, nohup, sequential -- one dataset at a time)
+
+Datasets are run sequentially (not in parallel) to avoid oversubscribing server
+threads (114 available).
+**CHECK THREADS AVAILABLE TO YOU BEFORE PROCEEDING**
+```{bash admixture-run, eval=FALSE}
+cd /path/to/swiftia
+nohup bash run_admixture_all_pruned.sh > admixture_all_pruned_master.log 2>&1 &
+disown -a
+```
+
+`run_admixture_all_pruned.sh` calls the three per-dataset scripts below in turn.
+Each is saved as its own `.sh` file alongside this pipeline.
+
+```{bash admixture-shell-scripts, eval=FALSE}
+# --- run_admixture_GoM10_pruned.sh ---
+cd /path/to/swiftia/admixture_GoM10/plink_files
+mkdir -p ../K_pruned
+for K in $(seq 1 10); do
+  mkdir -p ../K_pruned/K${K}
+  for rep in $(seq 1 10); do
+    mkdir -p ../K_pruned/K${K}/rep${rep}
+    cd ../K_pruned/K${K}/rep${rep}
+    admixture --cv -j80 -s time ../../../plink_files/swiftia_GoM10_pruned.bed ${K} \
+      > log${K}_${rep}.out 2>&1
+    cd ../../../plink_files
+  done
+done
+
+# --- run_admixture_GoMa_pruned.sh ---
+cd /path/to/swiftia/admixture_results_GoMa/plink_files
+mkdir -p ../K_pruned
+for K in $(seq 1 10); do
+  mkdir -p ../K_pruned/K${K}
+  for rep in $(seq 1 10); do
+    mkdir -p ../K_pruned/K${K}/rep${rep}
+    cd ../K_pruned/K${K}/rep${rep}
+    admixture --cv -j80 -s time ../../../plink_files/swiftia_GoMa_pruned.bed ${K} \
+      > log${K}_${rep}.out 2>&1
+    cd ../../../plink_files
+  done
+done
+
+# --- run_admixture_sub_pruned.sh ---
+cd /path/to/swiftia/admixture_sub/plink_files
+mkdir -p ../K_pruned
+for K in $(seq 1 10); do
+  mkdir -p ../K_pruned/K${K}
+  for rep in $(seq 1 10); do
+    mkdir -p ../K_pruned/K${K}/rep${rep}
+    cd ../K_pruned/K${K}/rep${rep}
+    admixture --cv -j80 -s time ../../../plink_files/swiftia_sub_pruned.bed ${K} \
+      > log${K}_${rep}.out 2>&1
+    cd ../../../plink_files
+  done
+done
+
+# --- run_admixture_all_pruned.sh ---
+echo "Starting GoM10 at $(date)"
+bash run_admixture_GoM10_pruned.sh
+echo "Finished GoM10 at $(date)"
+
+echo "Starting GoMa at $(date)"
+bash run_admixture_GoMa_pruned.sh
+echo "Finished GoMa at $(date)"
+
+echo "Starting Sub at $(date)"
+bash run_admixture_sub_pruned.sh
+echo "Finished Sub at $(date)"
+
+echo "All three complete at $(date)"
+```
+
+# 6. Extract CV errors
+
+```{bash admixture-cv-extract, eval=FALSE}
+for dataset in admixture_GoM10 admixture_results_GoMa admixture_sub; do
+  grep -H "CV error" ${dataset}/K_pruned/K*/rep*/log*.out | \
+    sed -E 's|.*K_pruned/K([0-9]+)/rep([0-9]+)/log.*CV error \(K=([0-9]+)\): ([0-9.]+)|K=\1 rep=\2 CV=\4|' \
+    > ${dataset}_CV_summary.txt
+done
+# Transfer the three *_CV_summary.txt files to base_dir locally
+```
+
+# 7. Load CV summaries into R
+
+```{r admixture-cv-load}
+read_cv_summary <- function(filepath, dataset_name) {
+  raw <- readLines(filepath)
+  data.frame(
+    K       = as.integer(sub("K=([0-9]+).*", "\\1", raw)),
+    rep     = as.integer(sub(".*rep=([0-9]+).*", "\\1", raw)),
+    CV      = as.numeric(sub(".*CV=([0-9.]+)", "\\1", raw)),
+    dataset = dataset_name
+  )
+}
+
+files <- list.files(full.names = TRUE, pattern = "CV_summary")
+cv_GoM10 <- read_cv_summary(files[grepl("GoM10", files)], "GoM10")
+cv_GoMa  <- read_cv_summary(files[grepl("GoMa",  files)], "GoMa")
+cv_sub   <- read_cv_summary(files[grepl("sub",   files)], "Sub")
+
+cv_all <- bind_rows(cv_GoM10, cv_GoMa, cv_sub)
+stopifnot(nrow(cv_all) == 300)   # 3 datasets x 10 K x 10 reps
+```
+
+# 8. CV means, best K, plot, best replicate per K
+
+```{r admixture-cv-summary}
+cv_means <- cv_all %>%
+  group_by(dataset, K) %>%
+  summarise(mean_CV = mean(CV), sd_CV = sd(CV), .groups = "drop") %>%
+  arrange(dataset, K)
+
+print(cv_means, n = 30)
+
+best_K <- cv_means %>% group_by(dataset) %>% slice_min(mean_CV, n = 1)
+print(best_K)   # confirms K=1 best-supported in all three datasets
+
+pdf("ADMIXTURE_CV_error_pruned_all3.pdf", width = 10, height = 6)
+ggplot(cv_means, aes(x = K, y = mean_CV, color = dataset)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymin = mean_CV - sd_CV, ymax = mean_CV + sd_CV), width = 0.2) +
+  scale_x_continuous(breaks = 1:10) +
+  labs(x = "K", y = "Mean CV Error (+/- SD across 10 reps)",
+       title = "ADMIXTURE CV Error by K (LD-pruned) -- GoM10, GoMa, Sub",
+       color = "Dataset") +
+  theme_minimal(base_size = 13)
+dev.off()
+
+# Best (lowest CV) replicate per K per dataset
+best_reps <- cv_all %>%
+  group_by(dataset, K) %>%
+  slice_min(CV, n = 1) %>%
+  ungroup()
+
+write.csv(best_reps, "ADMIXTURE_best_reps_pruned_all3.csv", row.names = FALSE)
+print(best_reps, n = 30)
+```
+
+# 9. Copy winning .Q/.P files into best_run_files/
+
+```{r admixture-copy-best-run-files}
+dataset_paths <- list(
+  GoM10 = list(K_pruned = file.path(base_dir, "admixture_GoM10_pruned/K_pruned"),
+               best_dir = file.path(base_dir, "admixture_GoM10_pruned/best_run_files"),
+               bed_base = "swiftia_GoM10_pruned"),
+  GoMa  = list(K_pruned = file.path(base_dir, "admixture_results_GoMa_pruned/K_pruned"),
+               best_dir = file.path(base_dir, "admixture_results_GoMa_pruned/best_run_files"),
+               bed_base = "swiftia_GoMa_pruned"),
+  Sub   = list(K_pruned = file.path(base_dir, "admixture_sub_pruned/K_pruned"),
+               best_dir = file.path(base_dir, "admixture_sub_pruned/best_run_files"),
+               bed_base = "swiftia_sub_pruned")
+)
+
+for (ds in names(dataset_paths)) {
+  info <- dataset_paths[[ds]]
+  dir.create(info$best_dir, showWarnings = FALSE, recursive = TRUE)
+  ds_best <- best_reps %>% filter(dataset == ds)
+
+  for (i in seq_len(nrow(ds_best))) {
+    K <- ds_best$K[i]; rep <- ds_best$rep[i]
+    src_dir <- file.path(info$K_pruned, paste0("K", K), paste0("rep", rep))
+    for (ext in c("Q", "P")) {
+      src <- file.path(src_dir, paste0(info$bed_base, ".", K, ".", ext))
+      dst <- file.path(info$best_dir, paste0(info$bed_base, ".", K, ".", ext))
+      if (file.exists(src)) file.copy(src, dst, overwrite = TRUE)
+      else warning(paste("Missing", ext, "file:", src))
+    }
+    cat(ds, "K =", K, "-> best rep", rep, "(CV =", round(ds_best$CV[i], 5), ") copied\n")
+  }
+}
+```
+
+```{r admixture-confirm-folders}
+list.files(file.path(base_dir, "admixture_GoM10_pruned/best_run_files"))
+list.files(file.path(base_dir, "admixture_results_GoMa_pruned/best_run_files"))
+list.files(file.path(base_dir, "admixture_sub_pruned/best_run_files"))
+```
+
+# 10. Structure plots
+
+File format notes:
+- `.Q` files contain ancestry proportions per individual (rows = individuals,
+  columns = one of K ancestral clusters, each row sums to 1)
+- `.P` files contain allele frequencies for each ancestral cluster
+
+**Verified cluster-to-lineage mappings** (re-verify via per-population mean
+ancestry if ADMIXTURE is rerun -- column order is not guaranteed to be
+consistent across independent runs):
+
+- GoM10 K=2: V1 = NW Gulf (EFGB 93.4%), V2 = NE Gulf (all other GoM10 sites >85%)
+- Sub K=3: V1 = Carolinian (Edisto 98.4%), V2 = NE Gulf (Gulf sites ex-EFGB),
+  V3 = NW Gulf (EFGB 91.7%)
+- GoMa K=2: V1 = NE Gulf (AAR/RTR/FTR/Diaphus >90%), V2 = NW Gulf
+  (EFGB 92.9%, WFGB 94.0%). Geyer (n=5) is near-evenly split (47/53) --
+  likely reflects small sample size / intermediate position, not a pipeline issue.
+
+```{r admixture-lineage-plot-function}
+plot_admixture_lineages <- function(q_file, pop_data, metadata, k, pop_order,
+                                     column_order, lineage_names, lineage_colors,
+                                     save_path = NULL, facet = TRUE) {
+  q_matrix <- read.table(q_file)
+
+  if (nrow(q_matrix) != nrow(pop_data)) {
+    stop("Q matrix rows (", nrow(q_matrix), ") don't match pop_data rows (",
+         nrow(pop_data), ")")
+  }
+
+  q_matrix <- q_matrix[, column_order]
+  names(q_matrix) <- lineage_names
+
+  adm_plot_data <- data.frame(
+    Sample = pop_data$individual,
+    Population = pop_data$population,
+    Longitude = metadata$LONG,
+    q_matrix,
+    check.names = FALSE   # preserve "NW Gulf" / "NE Gulf" / "Carolinian" as-is
+  )
+
+  adm_plot_data$Population <- factor(adm_plot_data$Population, levels = pop_order)
+  adm_plot_data <- adm_plot_data[order(adm_plot_data$Population, adm_plot_data$Longitude), ]
+  adm_plot_data$Position <- 1:nrow(adm_plot_data)
+
+  plot_data_long <- gather(adm_plot_data, key = "Lineage", value = "Proportion",
+                            all_of(lineage_names))
+  plot_data_long$Lineage <- factor(plot_data_long$Lineage, levels = lineage_names)
+
+  p <- ggplot(plot_data_long, aes(x = Position, y = Proportion, fill = Lineage)) +
+    geom_bar(stat = "identity", width = 1) +
+    scale_fill_manual(values = lineage_colors) +
+    theme_minimal() +
+    labs(y = "Ancestry Proportions", fill = "Genetic Lineage")
+
+  if (facet) p <- p + facet_grid(~Population, scales = "free_x", space = "free_x")
+
+  p <- p + theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.spacing = unit(0.1, "lines"),
+    strip.text.x = element_text(size = 10, angle = 90),
+    plot.margin = margin(t = 40, r = 20, b = 20, l = 20, unit = "pt"),
+    axis.title = element_text(size = 12),
+    legend.position = "right"
+  ) + scale_y_continuous(expand = c(0, 0))
+
+  if (!is.null(save_path)) ggsave(save_path, p, width = 12, height = 5, dpi = 300)
+
+  print(p)
+  return(invisible(list(plot = p, data = adm_plot_data)))
+}
+```
+
+```{r admixture-lineage-plot-run}
+# Shared lineage colors (matches established K1/K2/K3 convention)
+lineage_colors_all <- c("NW Gulf" = "#C3E9CEFF",
+                         "NE Gulf" = "#3491A8FF",
+                         "Carolinian" = "#35264CFF")
+
+# GoM10, K=2
+adm_G <- plot_admixture_lineages(
+  q_file      = file.path(base_dir, "admixture_GoM10_pruned/best_run_files/swiftia_GoM10_pruned.2.Q"),
+  pop_data    = pop_data_GoM10,
+  metadata    = se_metadata_neutral_GoM10,
+  k           = 2,
+  pop_order   = WE_order_GoM10,
+  column_order = c(1, 2),                       # V1=NW Gulf, V2=NE Gulf
+  lineage_names = c("NW Gulf", "NE Gulf"),
+  lineage_colors = lineage_colors_all[c("NW Gulf", "NE Gulf")],
+  save_path   = file.path(base_dir, "ADMIXTURE_GoM10_K2_pruned_FINAL.pdf"),
+  facet       = TRUE
+)
+
+# Sub, K=3
+adm_H <- plot_admixture_lineages(
+  q_file      = file.path(base_dir, "admixture_sub_pruned/best_run_files/swiftia_sub_pruned.3.Q"),
+  pop_data    = pop_data_sub,
+  metadata    = se_metadata_neutral_sub,
+  k           = 3,
+  pop_order   = WE_order_sub,
+  column_order = c(3, 2, 1),                    # V3=NW Gulf, V2=NE Gulf, V1=Carolinian
+  lineage_names = c("NW Gulf", "NE Gulf", "Carolinian"),
+  lineage_colors = lineage_colors_all,
+  save_path   = file.path(base_dir, "ADMIXTURE_Sub_K3_pruned_FINAL.pdf"),
+  facet       = TRUE
+)
+
+# GoMa, K=2 (supplementary; includes WFGB, Bright, Geyer)
+adm_GoMa <- plot_admixture_lineages(
+  q_file      = file.path(base_dir, "admixture_results_GoMa_pruned/best_run_files/swiftia_GoMa_pruned.2.Q"),
+  pop_data    = pop_data_GoMa,
+  metadata    = se_metadata_neutral_GoMa,
+  k           = 2,
+  pop_order   = WE_order_GoMa,
+  column_order = c(2, 1),                       # V2=NW Gulf, V1=NE Gulf
+  lineage_names = c("NW Gulf", "NE Gulf"),
+  lineage_colors = lineage_colors_all[c("NW Gulf", "NE Gulf")],
+  save_path   = file.path(base_dir, "ADMIXTURE_GoMa_K2_pruned_FINAL.pdf"),
+  facet       = TRUE
+)
+```
+
+# 11. Export reproducibility archive
+
+Alongside this `.RData`, the data deposit should also include: the six `.Q`/`.P`
+files listed in the manifest below (individual x K probability matrices), the
+pruned `.bim` files (locus IDs, not genotypes -- documents exactly which loci
+were used), and this script itself.
+
+```{r admixture-build-archive}
+admixture_archive <- list(
+
+  readme = "
+ADMIXTURE reproducibility archive for Swiftia exserta population genomics.
+Contains CV error data (300 runs: 3 datasets x K1-10 x 10 reps), best-replicate
+selections, verified cluster-to-lineage color/name mappings, and per-individual
+population assignments (no precise coordinates included).
+
+To reproduce structure plots: use plot_admixture_lineages() with the q_files
+listed below (Q/P matrices archived separately alongside this file) and the
+verified column_order per dataset -- DO NOT assume column order is consistent
+across independent ADMIXTURE runs; always re-verify via per-population mean
+ancestry before assigning lineage names/colors to a new run.
+",
+
+  pipeline_parameters = list(
+    input_panel = "neutral_dataset_final: 16,746 loci, clone-corrected, BayeScan-filtered (18 outliers removed)",
+    pruning_method = "PLINK --indep-pairwise 50 5 0.1 (SNP-count window, not bp-based; RAD loci lack real linkage-map positions)",
+    admixture_settings = "K=1-10, 10 replicates each, --cv, -s time (time-based seeding)",
+    datasets = data.frame(
+      dataset = c("GoM10", "GoMa", "Sub"),
+      n_individuals = c(158, 176, 174),
+      n_loci_unpruned = c(16746, 16746, 16746),
+      n_loci_pruned = c(5419, 5634, 5629),
+      n_populations = c(9, 12, 10)
+    )
+  ),
+
+  cv_results = list(
+    cv_all = cv_all,               # full 300-row CV table (dataset, K, rep, CV)
+    cv_means = cv_means,           # mean/SD CV per dataset per K
+    best_K = best_K,               # best-supported K per dataset (all K=1)
+    best_reps = best_reps          # best replicate per K per dataset
+  ),
+
+  verified_lineage_mappings = list(
+    GoM10_K2 = list(column_order = c(1, 2),
+                     lineage_names = c("NW Gulf", "NE Gulf"),
+                     verification = "EFGB 93.4% cluster 1; all other GoM10 sites >85% cluster 2"),
+    Sub_K3   = list(column_order = c(3, 2, 1),
+                     lineage_names = c("NW Gulf", "NE Gulf", "Carolinian"),
+                     verification = "Edisto 98.4% cluster1(V1); EFGB 91.7% cluster3(V3); other Gulf sites >80% cluster2(V2)"),
+    GoMa_K2  = list(column_order = c(2, 1),
+                     lineage_names = c("NW Gulf", "NE Gulf"),
+                     verification = "EFGB 92.9%/WFGB 94.0% cluster2(V2); other sites >90% cluster1(V1); Geyer near-even split (n=5)")
+  ),
+
+  lineage_colors = c("NW Gulf" = "#C3E9CEFF",
+                      "NE Gulf" = "#3491A8FF",
+                      "Carolinian" = "#35264CFF"),
+
+  population_data = list(
+    # Individual -> population only; coordinates deliberately excluded (NRDA sensitivity)
+    GoM10 = pop_data_GoM10,
+    GoMa  = pop_data_GoMa,
+    Sub   = pop_data_sub
+  ),
+
+  population_order_west_to_east = list(
+    GoM10 = WE_order_GoM10,
+    GoMa  = WE_order_GoMa,
+    Sub   = WE_order_sub
+  ),
+
+  q_p_file_manifest = data.frame(
+    dataset = c("GoM10", "GoMa", "Sub"),
+    K_used_in_manuscript = c(2, 2, 3),
+    Q_file = c("swiftia_GoM10_pruned.2.Q", "swiftia_GoMa_pruned.2.Q", "swiftia_sub_pruned.3.Q"),
+    P_file = c("swiftia_GoM10_pruned.2.P", "swiftia_GoMa_pruned.2.P", "swiftia_sub_pruned.3.P"),
+    note = "Archive these Q/P files alongside this .RData; not embedded here to keep file size manageable"
+  )
+)
+
+save(admixture_archive, file = file.path(base_dir, "ADMIXTURE_reproducibility_archive.RData"))
+
+cat("Archive saved:", file.path(base_dir, "ADMIXTURE_reproducibility_archive.RData"), "\n")
+cat("Remember to also archive these files alongside it for full reproducibility:\n")
+print(admixture_archive$q_p_file_manifest)
+```
+
+# 12. Export supplementary data tables
+
+```{r admixture-export-tables}
+# CV summary table
+supp_cv_table <- cv_means %>%
+  mutate(mean_CV = round(mean_CV, 5), sd_CV = round(sd_CV, 5)) %>%
+  rename(Dataset = dataset, `Mean CV Error` = mean_CV, `SD` = sd_CV) %>%
+  arrange(Dataset, K)
+
+write.csv(supp_cv_table, file.path(base_dir, "SuppTable_ADMIXTURE_CVerror.csv"), row.names = FALSE)
+
+# Pruning parameters table
+supp_params_table <- data.frame(
+  Dataset = c("GoM10", "GoMa", "Sub"),
+  Individuals = c(158, 176, 174),
+  Populations = c(9, 12, 10),
+  `Loci (unpruned neutral panel)` = c(16746, 16746, 16746),
+  `Loci (LD-pruned)` = c(5419, 5634, 5629),
+  `K shown in manuscript` = c(2, 2, 3),
+  check.names = FALSE
+)
+write.csv(supp_params_table, file.path(base_dir, "SuppTable_ADMIXTURE_parameters.csv"), row.names = FALSE)
+
+# Best-replicate ancestry tables
+build_ancestry_table <- function(adm_result_data, dataset_name) {
+  tbl <- adm_result_data[, c("Sample", "Population",
+                              setdiff(names(adm_result_data),
+                                      c("Sample","Population","Longitude","Position")))]
+  tbl$Dataset <- dataset_name
+  tbl
+}
+
+supp_ancestry_GoM10 <- build_ancestry_table(adm_G$data, "GoM10")
+supp_ancestry_Sub   <- build_ancestry_table(adm_H$data, "Sub")
+supp_ancestry_GoMa  <- build_ancestry_table(adm_GoMa$data, "GoMa")
+
+write.csv(supp_ancestry_GoM10, file.path(base_dir, "SuppTable_ADMIXTURE_ancestry_GoM10_K2.csv"), row.names = FALSE)
+write.csv(supp_ancestry_Sub,   file.path(base_dir, "SuppTable_ADMIXTURE_ancestry_Sub_K3.csv"), row.names = FALSE)
+write.csv(supp_ancestry_GoMa,  file.path(base_dir, "SuppTable_ADMIXTURE_ancestry_GoMa_K2.csv"), row.names = FALSE)
+
+list.files(base_dir, pattern = "SuppTable|CV_error_pruned")
+```
+
+# 13. Sanity checks
+
+```{r admixture-sanity-checks}
+# Confirm ancestry proportions sum to 1 for every individual (allowing for rounding)
+range(rowSums(supp_ancestry_GoM10[, c("NW Gulf", "NE Gulf")]))
+range(rowSums(supp_ancestry_Sub[, c("NW Gulf", "NE Gulf", "Carolinian")]))
+range(rowSums(supp_ancestry_GoMa[, c("NW Gulf", "NE Gulf")]))
+
+# Confirm no duplicate individuals and correct row counts
+anyDuplicated(supp_ancestry_GoM10$Sample)  # should be 0
+nrow(supp_ancestry_GoM10)  # should be 158
+anyDuplicated(supp_ancestry_Sub$Sample)    # should be 0
+nrow(supp_ancestry_Sub)    # should be 174
+anyDuplicated(supp_ancestry_GoMa$Sample)   # should be 0
+nrow(supp_ancestry_GoMa)   # should be 176
+```
+
+
+

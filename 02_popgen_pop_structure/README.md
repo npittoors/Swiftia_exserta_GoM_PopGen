@@ -1,7 +1,7 @@
 # Population Structure & Differentiation Analysis — `02_popgen_pop_structure_p.Rmd`
 
 This script is **Part 2** of a multi-part pipeline. It picks up after sample/locus
-filtering and clone correction (Part 1: `01_popgen_data_import_P`) and runs the
+filtering and clone correction (Part 1: `01_Data_Setup`) and runs the
 downstream population-level analyses: population structure (PCA/DAPC/UMAP), pairwise
 FST, LD pruning, AMOVA, and isolation-by-distance (Mantel) tests.
 
@@ -70,7 +70,7 @@ viridis, reshape2, ggdendro
 
 ## Required input files
 
-Produced upstream by `01_popgen_data_import` and expected in the working directory:
+Produced upstream by `01_Data_Setup` and expected in the working directory:
 
 - `snps.Rdata`, `pc.Rdata`, `snps_mlg.Rdata` — filtered / MLG-filtered / clone-corrected genind objects
 - `snps_mlg_he.Rdata`, `snps_mlg_he.hw.Rdata` — Ho- and HWE-filtered neutral datasets

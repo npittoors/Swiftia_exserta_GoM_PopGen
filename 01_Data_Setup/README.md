@@ -103,9 +103,3 @@ output, but the BayeScan run itself happens on a separate server/environment)
 - The BayeScan section requires access to a server/environment with BayeScan
   installed; the R chunks prepare the input files and process the output, but
   the BayeScan run itself is external.
-- Two open items are flagged inline and still need author confirmation before
-  this is treated as final: the seeded Hardy-Weinberg re-run
-  (`snps_mlg.neutral_192`) is not yet wired into the downstream BayeScan/
-  outlier-removal steps, and the final BayeScan outlier vector
-  (`outliers_to_remove`) was reconstructed to match the documented threshold
-  and should be re-run to confirm it evaluates to 18 loci.

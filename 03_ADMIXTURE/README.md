@@ -5,9 +5,6 @@ filtering and clone correction (Part 1: `01_Data_Setup`) and population
 structure analyses (Part 2: `02_popgen_pop_structure_p.Rmd`), and runs
 ADMIXTURE ancestry estimation on three of the four nested sample groupings.
 
-fineRADstructure and FEEMS analyses are not in this file — they live in
-separate scripts.
-
 ## Sample groupings
 
 ADMIXTURE is run on three LD-pruned datasets derived from the clone-corrected,

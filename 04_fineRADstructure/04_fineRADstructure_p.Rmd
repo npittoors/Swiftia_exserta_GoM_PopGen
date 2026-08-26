@@ -1,0 +1,537 @@
+---
+title: "04_fineRADstructure_p"
+author: "Nicole Pittoors"
+date: "2026-08-25"
+output: html_document
+---
+
+This script covers two related analyses:
+
+1. **fineRADstructure co-ancestry** (Malinsky et al. 2018) for GoM10 (158 ind,
+   9 pop) and Sub (174 ind, 10 pop). Two figure types are
+   produced per dataset: a population-averaged co-ancestry matrix ordered
+   west-to-east by geography, and an individual-level co-ancestry heatmap
+   ordered by the fineRADstructure hierarchical clustering tree.
+
+fineRADstructure itself (RADpainter + fineSTRUCTURE) is run outside R. This
+script assumes RADpainter has already been run on the GoM10 and Sub VCF
+subsets (produced in Section 1 below) to generate `.chunks.out`,
+`.mcmc.xml`, and `.mcmcTree.xml` files, and that `FinestructureLibrary.R`
+and `fineRADstructurePlot.R` (from the fineRADstructure distribution) are
+available locally.
+
+**A note on `fineRADstructurePlot.R`:** this external script must be manually
+edited to point at the correct dataset's `chunkfile`/`mcmcfile`/`treefile`
+before each `source()` call in this document — it does not take arguments.
+Comments at each `source()` call indicate which dataset it must be pointing
+to at that step.
+
+## Requirements
+
+R packages used across this script:
+vcfR, tidyverse (dplyr, tidyr, readr, forcats), reshape2, viridis, pheatmap, scales
+
+External tools / scripts:
+fineRADstructure (RADpainter, fineSTRUCTURE) — Malinsky et al. 2018
+FinestructureLibrary.R, fineRADstructurePlot.R
+
+
+## Required input files
+
+- `swiftia_snps_90_cov_maf_bi.recode.vcf` — filtered biallelic SNP VCF (also
+  archived on Figshare)
+- `pop_code_GoM10.Rdata`, `pop_code_sub.Rdata` — population code tables
+- `popmap.txt` — two-column sample-to-population map (no header)
+- `se_metadata_neutral_sub` — metadata including `SITE` and `sample_id`,
+  covering all individuals in both datasets
+
+## Outputs
+
+**Figures (PDF/PNG):** west-east ordered population co-ancestry matrices
+(GoM10, Sub); Sub individual co-ancestry heatmap (west-east ordered);
+dendrogram-clustered individual co-ancestry heatmaps (GoM10, Sub)
+
+**Tables (CSV):** individual and population-averaged co-ancestry matrices for
+GoM10 and Sub.
+
+## Notes
+
+- **Directional convention:** in all co-ancestry matrices, rows = Recipient,
+  columns = Donor.
+- **Edisto sample ID mangling:** R's automatic column-name handling converts
+  hyphenated Edisto sample IDs (e.g. `14-v-18-1-001`) to `X14.v.18.1.001`
+  when they're read in as row/column names. The fix
+  (`gsub("^X", "", gsub("\\.", "-", ...))`) must be applied immediately after
+  each `source("fineRADstructurePlot.R")` call for the Sub dataset — it is
+  not needed for GoM10, whose sample IDs are already in `SH*` format.
+
+# Setup
+
+```{r setup, message=FALSE}
+library(vcfR)
+library(tidyverse)
+library(reshape2)
+library(viridis)
+library(pheatmap)
+library(scales)
+```
+
+```{r base-dir}
+
+base_dir <- "file/path"
+setwd(base_dir)
+dir.create("fineRADfigures", showWarnings = FALSE)
+```
+
+# 1. Export GoM10 and Sub VCF subsets for RADpainter
+
+```{r vcf-subset-export}
+vcf_full <- read.vcfR("swiftia_snps_90_cov_maf_bi.recode.vcf")
+
+load("pop_code_GoM10.Rdata")
+load("pop_code_sub.Rdata")
+
+gom10_samples <- rownames(pop_code_GoM10)
+sub_samples   <- rownames(pop_code_sub)
+
+# write.vcf always produces .gz
+vcf_gom10 <- vcf_full[, c(1, which(colnames(vcf_full@gt)[-1] %in% gom10_samples) + 1)]
+vcfR::write.vcf(vcf_gom10, "swiftia_snps_GoM10.vcf.gz")
+
+vcf_sub <- vcf_full[, c(1, which(colnames(vcf_full@gt)[-1] %in% sub_samples) + 1)]
+vcfR::write.vcf(vcf_sub, "swiftia_snps_sub.vcf.gz")
+
+cat("GoM10:", ncol(vcf_gom10@gt) - 1, "samples\n")
+cat("Sub:  ", ncol(vcf_sub@gt) - 1,   "samples\n")
+```
+
+Run RADpainter on each `.vcf.gz` outside R to generate the `.chunks.out`,
+`.mcmc.xml`, and `.mcmcTree.xml` files needed below.
+
+# 2. Population-averaged co-ancestry matrices (west-to-east order)
+
+## 2.1 GoM10 setup and checks
+BEFORE RUNNING: edit `fineRADstructurePlot.R` to point to the GoM10 output
+files (`chunkfile <- "swiftia_GoM10_chunks.out"`, etc.; `analysisName <-
+"swiftia_GoM10"`).
+
+```{r shared-pop-order}
+WE_order_GoM10 <- c("EFGB", "Elvers", "McGrail", "Bouma",
+                     "Alderdice", "Diaphus", "FTR", "AAR", "RTR")
+WE_order_sub   <- c("EFGB", "Elvers", "McGrail", "Bouma",
+                     "Alderdice", "Diaphus", "FTR", "AAR", "RTR", "Edisto")
+```
+
+
+```{r gom10-finerad-setup}
+popmap <- read.table("popmap.txt", header = FALSE,
+                      col.names = c("SAMPLE", "POP"),
+                      stringsAsFactors = FALSE)
+rownames(popmap) <- popmap$SAMPLE
+cat("popmap loaded:", nrow(popmap), "samples,",
+    length(unique(popmap$POP)), "populations\n")
+
+# Produces: dataraw, datamatrix, popmeanmatrix, mapstatelist, tdend, popdend
+source("FinestructureLibrary.R")
+source("fineRADstructurePlot.R")
+
+# CHECK 1: dataraw dimensions
+cat("\n--- CHECK 1: dataraw dimensions ---\n")
+cat("Expected: 158 x 158\n")
+cat("Actual:  ", nrow(dataraw), "x", ncol(dataraw), "\n")
+stopifnot(nrow(dataraw) == 158, ncol(dataraw) == 158)
+
+# CHECK 2: population assignment (GoM10 IDs are SH* format; name mangling
+# is not expected, but verify)
+cat("\n--- CHECK 2: Population assignment ---\n")
+ind_names <- rownames(dataraw)
+ind_pops  <- popmap[ind_names, "POP"]
+cat("NA population assignments:", sum(is.na(ind_pops)), "(expected 0)\n")
+if (sum(is.na(ind_pops)) > 0) {
+  rownames(dataraw) <- gsub("^X", "", gsub("\\.", "-", rownames(dataraw)))
+  colnames(dataraw) <- gsub("^X", "", gsub("\\.", "-", colnames(dataraw)))
+  ind_names <- rownames(dataraw)
+  ind_pops  <- popmap[ind_names, "POP"]
+  cat("After fix — NA assignments:", sum(is.na(ind_pops)), "\n")
+  stopifnot(sum(is.na(ind_pops)) == 0)
+}
+
+# CHECK 3: all expected populations present
+cat("\n--- CHECK 3: Populations present ---\n")
+pops_found <- sort(unique(ind_pops))
+pops_missing <- setdiff(WE_order_GoM10, pops_found)
+cat("Populations found:", paste(pops_found, collapse = ", "), "\n")
+if (length(pops_missing) > 0) {
+  warning("Missing populations: ", paste(pops_missing, collapse = ", "))
+} else {
+  cat("All 9 expected populations present\n")
+}
+```
+
+## 2.2 GoM10 population co-ancestry matrix (computation)
+```{r gom10-pop-matrix-compute}
+pops_unique <- WE_order_GoM10[WE_order_GoM10 %in% unique(ind_pops)]
+pop_mat <- matrix(NA, nrow = length(pops_unique), ncol = length(pops_unique),
+                   dimnames = list(pops_unique, pops_unique))
+
+for (i in pops_unique) {
+  for (j in pops_unique) {
+    rows_i <- ind_names[ind_pops == i]
+    cols_j <- ind_names[ind_pops == j]
+    if (i == j) {
+      sub_m <- dataraw[rows_i, cols_j, drop = FALSE]
+      diag(sub_m) <- NA   # exclude self-comparisons
+      pop_mat[i, j] <- mean(sub_m, na.rm = TRUE)
+    } else {
+      pop_mat[i, j] <- mean(dataraw[rows_i, cols_j, drop = FALSE], na.rm = TRUE)
+    }
+  }
+}
+
+# CHECK 4: matrix completeness
+cat("\n--- CHECK 4: Population matrix completeness ---\n")
+cat("Off-diagonal NAs:", sum(is.na(pop_mat[row(pop_mat) != col(pop_mat)])),
+    "(expected 0)\n")
+
+write.csv(round(pop_mat, 3), "swiftia_GoM10_pop_coancestry.csv")
+cat("\nGoM10 population co-ancestry matrix (west to east):\n")
+print(round(pop_mat, 2))
+
+pop_mat_GoM10 <- pop_mat
+```
+
+## 2.3 Plotting function and final population-matrix figures
+```{r plot-pop-coancestry-function}
+plot_pop_coancestry <- function(pop_mat, pop_order, dataset_label,
+                                 n_ind, n_snps, outfile_prefix) {
+
+  pops <- pop_order[pop_order %in% rownames(pop_mat)]
+
+  mat_plot <- pop_mat[pops, pops]
+  diag(mat_plot) <- NA
+
+  melted <- reshape2::melt(mat_plot)
+  names(melted) <- c("Recipient", "Donor", "Coancestry")
+  melted$Recipient <- factor(melted$Recipient, levels = pops)
+  melted$Donor     <- factor(melted$Donor,     levels = pops)
+
+  clim <- range(melted$Coancestry, na.rm = TRUE)
+
+  fig <- ggplot(melted, aes(x = Donor, y = Recipient, fill = Coancestry)) +
+    geom_tile(color = "grey90", linewidth = 0.4) +
+    geom_tile(data = melted[is.na(melted$Coancestry), ],
+              fill = "grey85", color = "grey90") +
+    geom_text(data = melted[!is.na(melted$Coancestry), ],
+              aes(label = round(Coancestry, 1)),
+              color = "white", size = 3.2, fontface = "bold") +
+    scale_fill_viridis_c(
+      option   = "magma",
+      limits   = clim,
+      na.value = "grey85",
+      name     = "Mean\nco-ancestry\n(chunk counts)"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      axis.text.x     = element_text(angle = 45, hjust = 1, face = "bold", size = 10),
+      axis.text.y     = element_text(face = "bold", size = 10),
+      axis.title      = element_text(face = "bold", size = 11),
+      panel.grid      = element_blank(),
+      legend.position = "right",
+      legend.title    = element_text(size = 10),
+      plot.title      = element_text(hjust = 0.5, face = "bold", size = 13),
+      plot.subtitle   = element_text(hjust = 0.5, size = 10, colour = "grey40"),
+      plot.caption    = element_text(size = 8, colour = "grey50", hjust = 0)
+    ) +
+    labs(
+      title    = bquote(italic("Swiftia exserta") ~
+                        "\u2014 Population co-ancestry" ~ .(paste0("(", dataset_label, ")"))),
+      subtitle = "Mean RADpainter chunk counts between population pairs (west to east)\nDiagonal (within-population) excluded",
+      x        = "Donor population",
+      y        = "Recipient population",
+      caption  = paste0("n=", n_ind, " individuals, ", length(pops),
+                        " populations, ", n_snps, " neutral SNPs\n",
+                        "fineRADstructure (Malinsky et al. 2018); ",
+                        "loci reordered by LD prior to painting")
+    )
+
+  ggsave(paste0("figures/", outfile_prefix, ".pdf"), fig, width = 8, height = 7, dpi = 300)
+  ggsave(paste0("figures/", outfile_prefix, ".png"), fig, width = 8, height = 7, dpi = 300)
+  cat("Saved: figures/", outfile_prefix, ".pdf/png\n", sep = "")
+  print(fig)
+  return(fig)
+}
+```
+
+```{r gom10-pop-matrix-plot}
+fig_pop_GoM10 <- plot_pop_coancestry(
+  pop_mat        = pop_mat_GoM10,
+  pop_order      = WE_order_GoM10,
+  dataset_label  = "GoM10",
+  n_ind          = 158,
+  n_snps         = "16,609",
+  outfile_prefix = "Fig_coancestry_GoM10_population_matrix"
+)
+```
+
+## 2.4 Sub individual heatmap and population matrix
+
+BEFORE RUNNING: edit `fineRADstructurePlot.R` to point to the Sub output
+files, then re-source (see CHECK below — expects `dataraw` to become 174x174).
+```{r sub-pop-and-individual-matrices}
+source("fineRADstructurePlot.R")
+
+cat("\n=== dataraw check ===\n")
+cat("Current dimensions:", dim(dataraw), "\n")
+cat("For Sub heatmap need: 174 x 174\n")
+stopifnot(nrow(dataraw) == 174)
+
+# Edisto sample ID fix — required immediately after sourcing for Sub (see Notes above)
+rownames(dataraw) <- gsub("^X", "", gsub("\\.", "-", rownames(dataraw)))
+colnames(dataraw) <- gsub("^X", "", gsub("\\.", "-", colnames(dataraw)))
+
+ind_names_sub <- rownames(dataraw)
+ind_pops_sub  <- popmap[ind_names_sub, "POP"]
+stopifnot(sum(is.na(ind_pops_sub)) == 0)
+
+pop_factor_sub   <- factor(ind_pops_sub, levels = WE_order_sub)
+ind_order_sub    <- order(pop_factor_sub)
+mat_ordered_sub  <- dataraw[ind_order_sub, ind_order_sub]
+pops_ordered_sub <- ind_pops_sub[ind_order_sub]
+
+pop_breaks_sub <- cumsum(table(factor(pops_ordered_sub, levels = WE_order_sub))) + 0.5
+pop_mids_sub   <- c(0, pop_breaks_sub[-length(pop_breaks_sub)]) +
+                  diff(c(0, pop_breaks_sub)) / 2
+
+# Off-diagonal color scale (1st-99th percentile, avoids diagonal dominance)
+mat_offdiag_sub       <- mat_ordered_sub
+diag(mat_offdiag_sub) <- NA
+min_val_sub <- quantile(as.vector(mat_offdiag_sub), 0.01, na.rm = TRUE)
+cap_val_sub <- quantile(as.vector(mat_offdiag_sub), 0.99, na.rm = TRUE)
+cat("Off-diagonal color scale: min =", round(min_val_sub, 3),
+    "| cap (99th pct) =", round(cap_val_sub, 3), "\n")
+
+x_break_indices_sub <- pmax(1, pmin(round(pop_mids_sub), nrow(mat_ordered_sub)))
+x_breaks_sub        <- rownames(mat_ordered_sub)[x_break_indices_sub]
+
+mat_df_sub <- as.data.frame(mat_ordered_sub)
+mat_df_sub$Recipient <- factor(rownames(mat_ordered_sub), levels = rownames(mat_ordered_sub))
+melted_sub <- reshape2::melt(mat_df_sub, id.vars = "Recipient",
+                              variable.name = "Donor", value.name = "Coancestry")
+
+# --- Sub individual heatmap (west-to-east) ---
+fig2 <- ggplot(melted_sub, aes(x = Donor, y = Recipient, fill = Coancestry)) +
+  geom_tile() +
+  geom_tile(data = melted_sub[as.integer(melted_sub$Donor) == as.integer(melted_sub$Recipient), ],
+            fill = "grey80") +
+  geom_vline(xintercept = pop_breaks_sub, colour = "white", linewidth = 0.5) +
+  geom_hline(yintercept = nrow(mat_ordered_sub) - pop_breaks_sub + 1,
+             colour = "white", linewidth = 0.5) +
+  scale_fill_viridis_c(
+    option   = "magma",
+    limits   = c(min_val_sub, cap_val_sub),
+    oob      = scales::squish,
+    name     = "Co-ancestry\n(chunk counts)"
+  ) +
+  scale_x_discrete(breaks = x_breaks_sub, labels = WE_order_sub) +
+  scale_y_discrete(breaks = rownames(mat_ordered_sub)[x_break_indices_sub], labels = WE_order_sub) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x     = element_text(angle = 45, hjust = 1, face = "bold", size = 10),
+    axis.text.y     = element_text(face = "bold", size = 10),
+    axis.title      = element_text(face = "bold", size = 11),
+    panel.grid      = element_blank(),
+    legend.position = "right",
+    legend.title    = element_text(size = 10),
+    plot.title      = element_text(hjust = 0.5, face = "bold", size = 13),
+    plot.subtitle   = element_text(hjust = 0.5, size = 10, colour = "grey40"),
+    plot.caption    = element_text(size = 8, colour = "grey50", hjust = 0),
+    plot.margin     = margin(t = 10, r = 20, b = 40, l = 10, unit = "pt")
+  ) +
+  labs(
+    title    = expression(italic("Swiftia exserta") ~ "\u2014 Co-ancestry matrix (Sub)"),
+    subtitle = paste0("n=174 individuals ordered west to east by population\n",
+                      "Color scale restricted to off-diagonal range; ",
+                      "white lines denote population boundaries"),
+    x        = "Donor individual",
+    y        = "Recipient individual",
+    caption  = paste0("10 populations (9 Gulf of Mexico + Edisto), 16,688 neutral SNPs\n",
+                      "fineRADstructure (Malinsky et al. 2018); loci reordered by LD prior to painting")
+  )
+
+ggsave("figures/Fig_coancestry_Sub_individual_heatmap.pdf", fig2, width = 10, height = 9, dpi = 300)
+ggsave("figures/Fig_coancestry_Sub_individual_heatmap.png", fig2, width = 10, height = 9, dpi = 300)
+cat("Saved: figures/Fig_coancestry_Sub_individual_heatmap.pdf/png\n")
+print(fig2)
+
+# --- Sub population-averaged matrix ---
+pops_unique_sub <- WE_order_sub[WE_order_sub %in% unique(ind_pops_sub)]
+pop_mat_sub <- matrix(NA, nrow = length(pops_unique_sub), ncol = length(pops_unique_sub),
+                       dimnames = list(pops_unique_sub, pops_unique_sub))
+for (i in pops_unique_sub) {
+  for (j in pops_unique_sub) {
+    rows_i <- ind_names_sub[ind_pops_sub == i]
+    cols_j <- ind_names_sub[ind_pops_sub == j]
+    if (i == j) {
+      sub_m <- dataraw[rows_i, cols_j, drop = FALSE]
+      diag(sub_m) <- NA
+      pop_mat_sub[i, j] <- mean(sub_m, na.rm = TRUE)
+    } else {
+      pop_mat_sub[i, j] <- mean(dataraw[rows_i, cols_j, drop = FALSE], na.rm = TRUE)
+    }
+  }
+}
+write.csv(round(pop_mat_sub, 3), "swiftia_sub_pop_coancestry.csv")
+cat("\nSub population co-ancestry matrix (west to east):\n")
+print(round(pop_mat_sub, 2))
+
+fig_pop_Sub <- plot_pop_coancestry(
+  pop_mat        = pop_mat_sub,
+  pop_order      = WE_order_sub,
+  dataset_label  = "Sub",
+  n_ind          = 174,
+  n_snps         = "16,688",
+  outfile_prefix = "Fig_coancestry_Sub_population_matrix"
+)
+```
+
+# 3. Individual-level co-ancestry heatmaps (dendrogram-clustered)
+
+Individuals here are ordered by the fineRADstructure hierarchical clustering
+tree (`tdend`) rather than west-to-east geography — this is the complementary
+view to Section 2's geography-ordered matrices, showing whether the
+co-ancestry-based clustering recovers the same structure independent of
+imposed population order.
+```{r dendrogram-setup}
+pop_colors_GoM10 <- c(
+  "EFGB"      = "#FF2E00",
+  "McGrail"   = "#F78C61",
+  "Elvers"    = "#FFB812",
+  "Bouma"     = "#6F8E00",
+  "Alderdice" = "#1B6758",
+  "Diaphus"   = "#B0FFAD",
+  "FTR"       = "#45C2E3",
+  "AAR"       = "#000872",
+  "RTR"       = "#F5C7FF"
+)
+pop_colors_sub <- c(pop_colors_GoM10, "Edisto" = "#6E0A7C")
+
+# Population lookup: sample_id -> site (covers individuals in both datasets)
+pop_lookup <- setNames(se_metadata_neutral_sub$SITE, se_metadata_neutral_sub$sample_id)
+```
+
+## 3.1 Sub — dendrogram-clustered heatmap
+
+BEFORE RUNNING: edit `fineRADstructurePlot.R` to point to the Sub output
+files (`swiftia_sub_chunks.mcmc.xml`, etc.).
+
+```{r sub-dendrogram-heatmap}
+source("fineRADstructurePlot.R")
+
+# Edisto sample ID fix — applied immediately after sourcing (see Notes above)
+rownames(dataraw) <- gsub("^X", "", gsub("\\.", "-", rownames(dataraw)))
+colnames(dataraw) <- gsub("^X", "", gsub("\\.", "-", colnames(dataraw)))
+
+write.csv(dataraw, file = "swiftia_sub_ind_coancestry.csv", row.names = TRUE)
+
+# Symmetrize and remove diagonal
+datamat <- (dataraw + t(dataraw)) / 2
+diag(datamat) <- NA
+
+# Fix Edisto labels in the clustering tree, convert to hclust
+tdend <- dendrapply(tdend, function(n) {
+  if (!is.null(attr(n, "label"))) {
+    attr(n, "label") <- gsub("^X", "", gsub("\\.", "-", attr(n, "label")))
+  }
+  n
+})
+tdend_hclust <- as.hclust(tdend)
+
+stopifnot(all(tdend_hclust$labels %in% rownames(datamat)))
+stopifnot(all(rownames(datamat) %in% tdend_hclust$labels))
+
+datamat_ordered <- datamat[tdend_hclust$labels, tdend_hclust$labels]
+
+pops_sub <- pop_lookup[tdend_hclust$labels]
+ann_sub <- data.frame(
+  Population = factor(pops_sub, levels = WE_order_sub),
+  row.names  = tdend_hclust$labels
+)
+
+pdf("figures/fineRAD_ind_heatmap_sub_clustered_annotated_final.pdf", width = 11, height = 10)
+pheatmap(
+  datamat_ordered,
+  color                = magma(100),
+  breaks               = seq(62, 74, length.out = 101),
+  cluster_rows         = tdend_hclust,
+  cluster_cols         = tdend_hclust,
+  show_rownames        = FALSE,
+  show_colnames        = FALSE,
+  annotation_row       = ann_sub,
+  annotation_col       = ann_sub,
+  annotation_colors    = list(Population = pop_colors_sub),
+  annotation_names_row = FALSE,
+  annotation_names_col = FALSE,
+  border_color         = NA,
+  na_col               = "white",
+  treeheight_row       = 50,
+  treeheight_col       = 50,
+  main                 = "Individual co-ancestry \u2014 Sub (clustered)"
+)
+dev.off()
+```
+
+## 3.2 GoM10 — dendrogram-clustered heatmap
+
+BEFORE RUNNING: edit `fineRADstructurePlot.R` to point to the GoM10 output
+files, then re-source.
+
+```{r gom10-dendrogram-heatmap}
+source("fineRADstructurePlot.R")
+# No Edisto name fix needed for GoM10 (SH* IDs, no mangling)
+
+write.csv(dataraw, file = "swiftia_GoM10_ind_coancestry.csv", row.names = TRUE)
+
+datamat_GoM10 <- (dataraw + t(dataraw)) / 2
+diag(datamat_GoM10) <- NA
+
+tdend_hclust_GoM10 <- as.hclust(tdend)
+
+stopifnot(all(tdend_hclust_GoM10$labels %in% rownames(datamat_GoM10)))
+stopifnot(all(rownames(datamat_GoM10) %in% tdend_hclust_GoM10$labels))
+
+datamat_GoM10_ordered <- datamat_GoM10[tdend_hclust_GoM10$labels, tdend_hclust_GoM10$labels]
+
+pops_GoM10 <- pop_lookup[tdend_hclust_GoM10$labels]
+ann_GoM10 <- data.frame(
+  Population = factor(pops_GoM10, levels = WE_order_GoM10),
+  row.names  = tdend_hclust_GoM10$labels
+)
+
+# Off-diagonal range — adjust breaks below if this summary changes materially
+offdiag_GoM10 <- datamat_GoM10[upper.tri(datamat_GoM10)]
+summary(offdiag_GoM10)
+
+pdf("figures/fineRAD_ind_heatmap_GoM10_clustered_annotated_final.pdf", width = 10, height = 9)
+pheatmap(
+  datamat_GoM10_ordered,
+  color                = magma(100),
+  breaks               = seq(68, 78, length.out = 101),
+  cluster_rows         = tdend_hclust_GoM10,
+  cluster_cols         = tdend_hclust_GoM10,
+  show_rownames        = FALSE,
+  show_colnames        = FALSE,
+  annotation_row       = ann_GoM10,
+  annotation_col       = ann_GoM10,
+  annotation_colors    = list(Population = pop_colors_GoM10),
+  annotation_names_row = FALSE,
+  annotation_names_col = FALSE,
+  border_color         = NA,
+  na_col               = "white",
+  treeheight_row       = 50,
+  treeheight_col       = 50,
+  main                 = "Individual co-ancestry \u2014 GoM10 (clustered)"
+)
+dev.off()
+```
+
+

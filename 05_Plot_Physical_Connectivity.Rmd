@@ -1,0 +1,414 @@
+---
+title: "05_Plot_Physical_Connectivity"
+author: "Nicole Pittoors"
+date: "2026-08-25"
+output: html_document
+---
+
+# Overview
+
+This script plots the biophysical larval dispersal model output (Ichthyop/CROCO,
+provided by Luisa) for *Swiftia exserta* in the northern Gulf of Mexico. It
+produces two figures:
+
+1. **Connectivity matrix** — full 12-population ensemble matrix (release x
+   recruitment zone), showing larval settlement proportions (%) with year(s)
+   of connection (2014 / 2015 / Both) indicated by point shape.
+2. **Connectivity map** — GoM10 (9-population) spatial network map, showing
+   directed larval exchange arrows over a Gulf of Mexico basemap. Arrows
+   >=0.1% transport are magma-colored by exchange strength; trace exchange
+   (<0.1%, greater than zero) is shown as thin dashed arrows.
+
+This script is standalone — it depends only on the raw connectivity CSVs, not
+on any object from the population genetics scripts (`01`-`04`).
+
+## Requirements
+tidyverse (dplyr, tidyr, readr, purrr, forcats), viridis, scales, marmap, maps
+
+## Required input files
+
+- `Se_popgen_Connectivity_matrix.csv` — larval settlement proportions (%),
+  release zones (rows) x recruitment zones (columns)
+- `Se_popgen_Connectivity_matrix_years.csv` — same dimensions; release year(s)
+  ("2014", "2015", "Both") per cell, NA where no modeled connection exists
+
+## Outputs
+
+**Figures (PDF/PNG):** `phys_connectivity_matrix` (full 12-population
+ensemble matrix); `swiftia_GoM10_connectivity_map` (9-population directed
+network map).
+
+## Notes
+
+- **RTR fix:** `Se_popgen_Connectivity_matrix.csv` has RTR's row label read in
+  as `NA` rather than `"RTR"` — this is fixed programmatically in Section 2
+  rather than by editing the source CSV, so the fix is visible and
+  reproducible. If RTR is also absent as a *column* (no other site recruits
+  from RTR in the model), a zero-column is added rather than leaving it
+  missing, so RTR still appears in the GoM10 subset matrix.
+- **`<0.1` values:** the source CSV uses `"<0.1"` as a floor label for very
+  small but nonzero connectivity. This is treated numerically as `0.05` for
+  fill-color purposes in the matrix figure; for the map figure, `<0.1` edges
+  are kept in a separate "trace exchange" layer rather than dropped, so the
+  reader can see where a modeled connection exists at all versus where it's
+  strong enough to plot with an arrow.
+- **GoM10 subset:** the map uses only the 9 GoM10 populations (drops WFGB,
+  Bright, Geyer — the small-n sites excluded from GoM10 throughout the rest
+  of the pipeline), matching the population genetics side for direct
+  comparison in the manuscript.
+
+
+# Setup
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(viridis)
+library(scales)
+library(marmap)
+library(maps)
+```
+
+```{r base-dir}
+base_dir <- "your/base/path"
+setwd(base_dir)
+dir.create("figures", showWarnings = FALSE)
+```
+
+# 1. Import connectivity data
+
+```{r import-connectivity-data}
+val_raw  <- read_csv("Se_popgen_Connectivity_matrix.csv",       show_col_types = FALSE)
+year_raw <- read_csv("Se_popgen_Connectivity_matrix_years.csv", show_col_types = FALSE)
+
+parse_matrix <- function(raw) {
+  df         <- as.data.frame(raw)
+  col_labels <- as.character(unlist(df[nrow(df), ]))
+  row_labels <- as.character(df[[1]])
+  row_labels <- row_labels[!is.na(row_labels) & row_labels != "NA"]
+  data_block <- df[-nrow(df), -1]
+  colnames(data_block) <- col_labels[-1]
+  rownames(data_block) <- row_labels
+  data_block
+}
+
+val_data  <- parse_matrix(val_raw)
+year_data <- parse_matrix(year_raw)
+
+recruit_order <- c("WFGB", "EFGB", "Bright", "Geyer", "Elvers",
+                    "McGrail", "Bouma", "Alderdice", "Diaphus", "FTR", "AAR", "RTR")
+release_order <- c("RTR", "AAR", "FTR", "Diaphus", "Alderdice", "Bouma",
+                    "McGrail", "Elvers", "Geyer", "Bright", "EFGB", "WFGB")
+
+val_data  <- val_data[release_order, recruit_order]
+year_data <- year_data[release_order, recruit_order]
+```
+
+# 2. GoM10 subset and fixes (needed for the map figure only)
+
+```{r gom10-subset-fixes}
+GoM10_sites <- c("EFGB", "Elvers", "McGrail", "Bouma",
+                  "Alderdice", "Diaphus", "FTR", "AAR", "RTR")
+
+# Convert "<0.1" -> 0.05, everything else to numeric
+larval_numeric <- val_data
+larval_numeric[] <- lapply(val_data, function(x)
+  ifelse(x == "<0.1", 0.05, suppressWarnings(as.numeric(x))))
+larval_numeric <- as.data.frame(lapply(larval_numeric, as.numeric))
+rownames(larval_numeric) <- rownames(val_data)
+
+# Fix 1: RTR row label was read in as "NA" rather than "RTR"
+rownames(larval_numeric)[rownames(larval_numeric) == "NA"] <- "RTR"
+
+# Fix 2: add an RTR column of zeros if it's absent as a recruitment zone
+# (i.e. RTR received no modeled larval input from any site)
+if (!"RTR" %in% colnames(larval_numeric)) {
+  larval_numeric[["RTR"]] <- 0
+  cat("RTR column added as zeros (RTR received no modeled larval input)\n")
+}
+
+stopifnot(all(GoM10_sites %in% rownames(larval_numeric)))
+stopifnot(all(GoM10_sites %in% colnames(larval_numeric)))
+
+# Subset to GoM10 sites only (drops WFGB, Bright, Geyer)
+larval_GoM10 <- larval_numeric[GoM10_sites, GoM10_sites]
+larval_GoM10[is.na(larval_GoM10)] <- 0
+
+cat("larval_GoM10 dims:", dim(larval_GoM10), "\n")
+```
+
+# 3. Figure 1 — Connectivity matrix (full ensemble, 12 populations)
+
+```{r connectivity-matrix}
+to_long <- function(mat, value_col) {
+  mat %>%
+    as.data.frame() %>%
+    mutate(Release = rownames(.)) %>%
+    pivot_longer(-Release, names_to = "Recruit", values_to = value_col)
+}
+
+df <- left_join(
+  to_long(val_data,  "Value"),
+  to_long(year_data, "Year"),
+  by = c("Release", "Recruit")
+) %>%
+  filter(!is.na(Year), Year != "NA") %>%
+  mutate(
+    # "<0.1" is a display-only floor label; treated numerically as 0.05 for fill
+    NumValue = ifelse(Value == "<0.1", 0.05, suppressWarnings(as.numeric(Value))),
+    Label    = as.character(Value),
+    Release  = factor(Release, levels = release_order),
+    Recruit  = factor(Recruit, levels = recruit_order),
+    Year     = factor(Year,    levels = c("2014", "2015", "Both"))
+  )
+
+p_connectivity <- ggplot(df, aes(x = Recruit, y = Release)) +
+  geom_tile(aes(fill = NumValue), color = "white", linewidth = 0.5) +
+  geom_hline(yintercept = seq(0.5, length(release_order) - 0.5, by = 1),
+             color = "grey85", linewidth = 0.4) +
+  geom_vline(xintercept = seq(0.5, length(recruit_order) - 0.5, by = 1),
+             color = "grey85", linewidth = 0.4) +
+  geom_text(aes(label = Label), color = "white", size = 2.8, fontface = "bold") +
+  geom_point(
+    aes(x = as.numeric(Recruit) + 0.32,
+        y = as.numeric(fct_rev(Release)) + 0.32,
+        shape = Year),
+    color = "white", size = 1.8, stroke = 0.3
+  ) +
+  scale_fill_gradientn(
+    colors = magma(100, begin = 0.10, end = 0.95),
+    name   = "Connectivity\n(%)",
+    guide  = guide_colorbar(barwidth = 0.8, barheight = 8,
+                             title.position = "top", title.hjust = 0.5)
+  ) +
+  scale_shape_manual(values = c("2014" = 16, "2015" = 17, "Both" = 15), name = "Year") +
+  scale_x_discrete(position = "bottom") +
+  scale_y_discrete(limits = rev(release_order)) +
+  labs(x = "Recruitment Zone", y = "Release Zone") +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x      = element_text(angle = 45, hjust = 1, vjust = 1, size = 9),
+    axis.text.y      = element_text(size = 9),
+    axis.title       = element_text(face = "bold", size = 11),
+    panel.grid       = element_blank(),
+    legend.position  = "right",
+    legend.box       = "vertical",
+    legend.spacing.y = unit(0.5, "cm"),
+    legend.title     = element_text(face = "bold", size = 9),
+    legend.text      = element_text(size = 9),
+    plot.margin      = margin(8, 8, 8, 8)
+  ) +
+  coord_cartesian(clip = "off")
+
+ggsave("figures/phys_connectivity_matrix.png", plot = p_connectivity,
+       width = 8, height = 7, dpi = 300, bg = "white")
+ggsave("figures/phys_connectivity_matrix.pdf", plot = p_connectivity,
+       width = 8, height = 7, dpi = 300)
+
+print(p_connectivity)
+cat("Saved: figures/phys_connectivity_matrix.pdf/png\n")
+```
+
+# 4. Figure 2 prep — directed edges and basemap (GoM10, 9 populations)
+
+```{r gom10-site-coords}
+# GoM10 site coordinates (no WFGB, Bright, Geyer)
+sites_df <- data.frame(
+  site = GoM10_sites,
+  lon  = c(-93.61300, -92.92279, -92.82152, -92.46734,
+           -91.98353, -90.70327, -88.43804, -88.33845, -87.57561),
+  lat  = c( 27.96824,  27.85359,  27.96214,  28.07165,
+            28.07640,  28.08492,  29.23241,  29.25225,  29.43917)
+)
+
+# label offsets below are a uniform default. Tune label_hjust/label_vjust per site if any label overlaps the coastline or another point.
+label_df <- sites_df %>%
+  mutate(label_hjust = -0.15, label_vjust = -0.55)
+```
+
+```{r build-directed-edges}
+# All nonzero directed larval edges (release -> recruit)
+directed_larval_all <- data.frame()
+for (i in seq_along(GoM10_sites)) {
+  for (j in seq_along(GoM10_sites)) {
+    if (i == j) next
+    val <- as.numeric(larval_GoM10[GoM10_sites[i], GoM10_sites[j]])
+    if (is.na(val) || val == 0) next
+    directed_larval_all <- rbind(directed_larval_all, data.frame(
+      from     = GoM10_sites[i],
+      to       = GoM10_sites[j],
+      larv_val = val
+    ))
+  }
+}
+
+cat("All nonzero directed larval edges:", nrow(directed_larval_all), "\n")
+cat("Value range:", round(range(directed_larval_all$larv_val), 3), "\n")
+
+# Main edges: >= 0.1% transport, magma-colored by strength (log scale)
+directed_larval_B <- directed_larval_all %>%
+  filter(larv_val >= 0.1) %>%
+  left_join(sites_df, by = c("from" = "site")) %>%
+  rename(from_lon = lon, from_lat = lat) %>%
+  left_join(sites_df, by = c("to" = "site")) %>%
+  rename(to_lon = lon, to_lat = lat) %>%
+  mutate(
+    curve = case_when(
+      from == "Elvers"    & to == "McGrail"   ~ -0.25,
+      from == "McGrail"   & to == "EFGB"      ~  0.30,
+      from == "McGrail"   & to == "Bouma"     ~  0.35,
+      from == "McGrail"   & to == "Alderdice" ~  0.20,
+      from == "Bouma"     & to == "EFGB"      ~ -0.20,
+      from == "Bouma"     & to == "McGrail"   ~ -0.35,
+      from == "Alderdice" & to == "EFGB"      ~ -0.30,
+      from == "Alderdice" & to == "McGrail"   ~  0.25,
+      from == "Alderdice" & to == "Bouma"     ~ -0.20,
+      from == "FTR"       & to == "AAR"       ~  0.80,
+      from == "AAR"       & to == "FTR"       ~ -0.80,
+      TRUE ~ 0.20
+    ),
+    palette_pos = scales::rescale(log1p(larv_val), to = c(0.15, 0.95),
+                                   from = log1p(c(0.1, 7.3))),
+    magma_col = mapply(function(p) viridis::magma(1, begin = p, end = p), palette_pos)
+  )
+
+# Trace edges: nonzero but < 0.1% transport — shown as thin dashed arrows
+# curve is a uniform default here (0.15) rather than pair-tuned,adjust
+# per-pair (as done for directed_larval_B above) if any trace arrows overlap.
+directed_larval_trace <- directed_larval_all %>%
+  filter(larv_val < 0.1) %>%
+  left_join(sites_df, by = c("from" = "site")) %>%
+  rename(from_lon = lon, from_lat = lat) %>%
+  left_join(sites_df, by = c("to" = "site")) %>%
+  rename(to_lon = lon, to_lat = lat) %>%
+  mutate(curve = 0.15)
+
+cat("Main edges (>=0.1%):", nrow(directed_larval_B), "\n")
+cat("Trace edges (<0.1%, >0):", nrow(directed_larval_trace), "\n")
+```
+
+```{r gom10-basemap}
+gulf_bath <- getNOAA.bathy(lon1 = -95, lon2 = -87,
+                            lat1 = 27,  lat2 = 30.5,
+                            resolution = 4)
+bath_df     <- fortify(gulf_bath)
+gulf_states <- map_data("state",
+                         region = c("texas", "louisiana", "mississippi", "alabama", "florida"))
+```
+
+# 5. Figure 2 — Connectivity map (GoM10, directed larval exchange)
+
+```{r fig-connectivity-map}
+connectivity_map <- ggplot() +
+
+  geom_rect(aes(xmin = -95.2, xmax = -86.5, ymin = 26.8, ymax = 30.8),
+            fill = "#D1EEFC") +
+
+  geom_contour(data = bath_df,
+               aes(x = x, y = y, z = z),
+               color = "grey60", linewidth = 0.2,
+               breaks = c(-500, -1000, -2000, -3000)) +
+
+  geom_polygon(data = gulf_states,
+               aes(x = long, y = lat, group = group),
+               fill = "grey88", color = "grey50", linewidth = 0.3) +
+
+  # LAYER 1: trace arrows (<0.1%) — thin, dashed, grey, drawn first
+  {
+    purrr::pmap(
+      list(directed_larval_trace$from_lon, directed_larval_trace$from_lat,
+           directed_larval_trace$to_lon,   directed_larval_trace$to_lat,
+           directed_larval_trace$curve),
+      function(x, y, xend, yend, curv) {
+        geom_curve(aes(x = x, y = y, xend = xend, yend = yend),
+                   curvature = curv,
+                   color     = "grey60",
+                   linewidth = 0.3,
+                   linetype  = "dashed",
+                   alpha     = 0.5,
+                   arrow     = arrow(length = unit(0.08, "cm"), type = "closed", angle = 15))
+      }
+    )
+  } +
+
+  # LAYER 2: main arrows (>=0.1%) — magma colored, drawn on top
+  {
+    purrr::pmap(
+      list(directed_larval_B$from_lon, directed_larval_B$from_lat,
+           directed_larval_B$to_lon,   directed_larval_B$to_lat,
+           directed_larval_B$curve,    directed_larval_B$magma_col),
+      function(x, y, xend, yend, curv, col) {
+        geom_curve(aes(x = x, y = y, xend = xend, yend = yend),
+                   curvature = curv,
+                   color     = col,
+                   linewidth = 1.0,
+                   alpha     = 0.9,
+                   arrow     = arrow(length = unit(0.12, "cm"), type = "closed", angle = 15))
+      }
+    )
+  } +
+
+  # Invisible points to drive the magma colorbar
+  geom_point(data = directed_larval_B,
+             aes(x = from_lon, y = from_lat, color = larv_val),
+             shape = NA) +
+
+  scale_color_viridis_c(
+    option = "magma",
+    trans  = "log1p",
+    breaks = c(0.1, 0.5, 1.0, 2.0, 5.0, 7.3),
+    labels = c("0.1", "0.5", "1.0", "2.0", "5.0", "7.3"),
+    limits = c(0.1, 7.3),
+    begin  = 0.15,
+    end    = 0.95,
+    name   = "Larval transport\n(%)",
+    guide  = guide_colorbar(barwidth = 0.8, barheight = 5,
+                             title.position = "top", title.hjust = 0.5)
+  ) +
+
+  # Dummy segment so the trace-arrow style gets its own legend entry
+  geom_segment(
+    data = data.frame(x = NA_real_, y = NA_real_, xend = NA_real_, yend = NA_real_,
+                       lab = "Trace exchange\n(<0.1%)"),
+    aes(x = x, y = y, xend = xend, yend = yend, linetype = lab)
+  ) +
+  scale_linetype_manual(
+    values = c("Trace exchange\n(<0.1%)" = "dashed"),
+    name   = NULL,
+    guide  = guide_legend(override.aes = list(color = "grey60", linewidth = 0.5, alpha = 0.6))
+  ) +
+
+  geom_point(data = sites_df,
+             aes(x = lon, y = lat),
+             size = 3.5, shape = 21,
+             fill = "black", color = "white", stroke = 0.7) +
+
+  geom_text(data = label_df,
+            aes(x = lon, y = lat, label = site,
+                hjust = label_hjust, vjust = label_vjust),
+            size = 3.0, color = "grey20") +
+
+  scale_x_continuous(breaks = seq(-95, -87, by = 1)) +
+  scale_y_continuous(breaks = seq(27, 30, by = 1)) +
+  coord_fixed(xlim = c(-95, -86.5), ylim = c(27, 30.4), ratio = 1) +
+
+  theme_minimal(base_size = 11) +
+  theme(
+    panel.grid        = element_blank(),
+    panel.border      = element_rect(color = "black", fill = NA, linewidth = 0.8),
+    axis.ticks        = element_line(color = "black"),
+    axis.ticks.length = unit(0.2, "cm"),
+    axis.title        = element_text(size = 11),
+    legend.position   = "right",
+    legend.title      = element_text(size = 9, face = "bold"),
+    legend.text       = element_text(size = 8),
+    legend.spacing.y  = unit(0.5, "cm")
+  ) +
+  labs(x = "Longitude", y = "Latitude")
+
+print(connectivity_map)
+
+ggsave("figures/swiftia_GoM10_connectivity_map.pdf",
+       connectivity_map, width = 10, height = 6, dpi = 300)
+ggsave("figures/swiftia_GoM10_connectivity_map.png",
+       connectivity_map, width = 10, height = 6, dpi = 300)
+```

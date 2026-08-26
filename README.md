@@ -93,7 +93,7 @@ of the clone-corrected, neutral SNP dataset:
 | **GoM10** | 158 | 9 | Gulf populations with >10 individuals (excl. WFGB, Bright, Geyer, Edisto) |
 | **Sub** | 174 | 10 | GoM10 + Edisto |
 
-In manuscript text: GoM10 = Northern Gulf subset; Sub = Gulf-Carolinian subset.
+In manuscript text: GoM10 = Northern Gulf subset; Sub = Gulf-Carolinian subset, and FTR (Flat Top Reef) = MTR (Mountaintop Reef)
 
 ---
 

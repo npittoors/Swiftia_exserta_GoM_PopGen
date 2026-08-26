@@ -32,7 +32,7 @@ R packages used across this script:
 
 tidyverse (dplyr, tidyr, readr, purrr, forcats), viridis, scales, marmap, maps
 
-## Required input files
+## Required input files (found on figshare - https://doi.org/10.6084/m9.figshare.33292446)
 
 - `Se_popgen_Connectivity_matrix.csv` — larval settlement proportions (%),
   release zones (rows) x recruitment zones (columns)
